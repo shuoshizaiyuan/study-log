@@ -262,5 +262,5 @@
     });
   }
 
-  A.views.tasks = { title: '任务', render: render, bind: bind, taskSheet: taskSheet };
+  A.views.tasks = { title: '任务', render: render, bind: bind, taskSheet: taskSheet, QUAD: QUAD };
 })(window);

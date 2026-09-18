@@ -422,6 +422,18 @@
       var cats = Store.settings().categories;
       for (var i = 0; i < cats.length; i++) if (cats[i].id === categoryId) return palette[i % palette.length];
       return '#185FA5';
+    },
+    /* 没设分类时按任务名自动配色 —— 不同任务自然不同色 */
+    autoColor: function (key) {
+      var palette = ['#185FA5', '#0F6E56', '#993C1D', '#534AB7', '#854F0B', '#A32D2D'];
+      var s = String(key == null ? '' : key), h = 0;
+      for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 100000;
+      return palette[h % palette.length];
+    },
+    /* 一条记录（或正在进行的一段）该用什么色：有分类按分类，没分类按任务名 */
+    recColor: function (r) {
+      if (r && r.categoryId) return A.meta.subjColor(r.categoryId);
+      return A.meta.autoColor((r && r.title) || '');
     }
   };
 })(window);

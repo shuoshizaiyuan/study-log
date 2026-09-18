@@ -9,6 +9,42 @@
   var tickTimer = null;
   var pendingImgs = [];      /* 记录弹层内的图片暂存 [{id,name,path,w,h}] */
 
+  /* ---------------- 重叠分栏 ----------------
+     同一时间段互相重叠的段（最常见于两台设备各自开始计时、同步上来之后），
+     以前会严丝合缝地叠在同一个位置、互相盖住。现在把它们分到不同的"轨道"上并排显示。 */
+  function laneLayout(items) {
+    var arr = items.slice().sort(function (a, b) { return a.s - b.s || a.e - b.e; });
+    var i = 0;
+    while (i < arr.length) {
+      /* 找出一簇"连着互相重叠"的段 */
+      var j = i, end = arr[i].e;
+      while (j + 1 < arr.length && arr[j + 1].s < end) {
+        j++;
+        if (arr[j].e > end) end = arr[j].e;
+      }
+      var group = arr.slice(i, j + 1);
+      var laneEnds = [];
+      group.forEach(function (it) {
+        var put = false;
+        for (var k = 0; k < laneEnds.length; k++) {
+          if (laneEnds[k] <= it.s) { it.lane = k; laneEnds[k] = it.e; put = true; break; }
+        }
+        if (!put) { it.lane = laneEnds.length; laneEnds.push(it.e); }
+      });
+      var n = laneEnds.length;
+      group.forEach(function (it) { it.lanes = n; });
+      i = j + 1;
+    }
+    return arr;
+  }
+
+  /* 分栏时的 left / width；只有一栏时不加内联样式，沿用 CSS 默认 */
+  function laneStyle(it) {
+    if (!it.lanes || it.lanes <= 1) return '';
+    var each = '(100% - 56px) / ' + it.lanes;
+    return 'left:calc(56px + ' + each + ' * ' + it.lane + ');width:calc(' + each + ' - 3px);';
+  }
+
   /* ---------------- 计时状态 ---------------- */
   function getRunning() { return S.running(); }
   function isRunning(r) { return !!(r && r.startTs); }
@@ -104,10 +140,15 @@
     tasks.sort(function (a, b) { return String(b.lastUsedAt || '').localeCompare(String(a.lastUsedAt || '')); });
     var settings = S.settings();
     var pickCat = null, pickTags = [];
+    var QUADL = (A.views.tasks && A.views.tasks.QUAD) || [];
 
     var html = '';
+    /* —— 面板一：手动输入 —— */
+    html += '<div id="nt-panel-custom">';
     html += '<label class="label" style="margin-top:6px">任务名</label>';
     html += '<input class="input" id="nt-title" placeholder="要做什么？例如：背诵社会研究方法" autocomplete="off">';
+    html += '<button class="btn block" id="nt-tolist" style="margin-top:10px">任务清单' +
+      (tasks.length ? '（' + tasks.length + ' 条）' : '') + '</button>';
     html += '<label class="label">分类（只能选一个）</label><div class="row wrap" id="nt-cats">' +
       settings.categories.map(function (c) {
         return '<button class="chip" data-cat="' + c.id + '">' + U.esc(c.name) + '</button>';
@@ -116,14 +157,29 @@
       settings.tags.map(function (t) {
         return '<button class="chip" data-tag="' + t.id + '">' + U.esc(t.name) + '</button>';
       }).join('') + '<button class="chip" data-newtag>+ 新建标签</button></div>';
-    if (tasks.length) {
-      html += '<label class="label">从任务清单里挑</label><div class="row wrap" id="nt-picks">' +
-        tasks.slice(0, 24).map(function (t) {
-          return '<button class="chip mini" data-pick="' + t.id + '">' + U.esc(t.title) + '</button>';
-        }).join('') + '</div>';
+    html += '</div>';
+
+    /* —— 面板二：任务清单（简化四象限，点任务直接开始）—— */
+    html += '<div id="nt-panel-list" style="display:none">';
+    html += '<button class="btn sm ghost block" id="nt-tocustom">返回手动输入</button>';
+    if (tasks.length && QUADL.length) {
+      html += '<div class="mq-grid">' + QUADL.map(function (q) {
+        var its = tasks.filter(function (t) { return t.quadrant === q.id; });
+        return '<div class="mq"><div class="mq-h"><span>' + U.esc(q.name) + '</span><span>' + its.length + '</span></div>' +
+          '<div class="mq-b">' + (its.length ? its.slice(0, 30).map(function (t) {
+            var sub = [A.meta.catName(t.categoryId)].concat(A.meta.tagNames(t.tagIds)).filter(Boolean).join(' · ') || '未分类';
+            if (t.dueDate) sub += ' · 预期 ' + t.dueDate;
+            return '<button class="mq-item" data-pickstart="' + t.id + '">' + U.esc(t.title) +
+              '<span class="mi-m">' + U.esc(sub) + '</span></button>';
+          }).join('') : '<div class="mq-empty">空</div>') + '</div></div>';
+      }).join('') + '</div>';
+      html += '<div class="hint">点任务直接开始；上一段会自动结算，两段紧挨着。</div>';
+    } else {
+      html += '<div class="empty" style="padding:26px 8px">任务清单还是空的<br>先到「任务」页加几条，就能在这里点着开始了</div>';
     }
-    html += '<div class="hint">选定后会立刻开始计时；上一段自动结算，两段紧挨着。</div>';
-    html += '<div style="margin-top:12px"><button class="btn ghost sm block" data-stop>今天到这儿，先停下来</button></div>';
+    html += '</div>';
+
+    html += '<div style="margin-top:14px"><button class="btn ghost sm block" data-stop>今天到这儿，先停下来</button></div>';
 
     var foot =
       '<button class="btn ghost" data-cancel>取消</button>' +
@@ -169,28 +225,12 @@
           A.sync.markDirty('settings', 'settings');
           close(); openNextSheet();
         };
-        el.querySelectorAll('[data-pick]').forEach(function (b) {
-          b.onclick = function () {
-            var t = S.tasks().filter(function (x) { return x.id === b.dataset.pick; })[0];
-            if (!t) return;
-            titleEl.value = t.title;
-            pickCat = t.categoryId; pickTags = (t.tagIds || []).slice();
-            syncCats(); syncTags();
-          };
-        });
-        el.querySelector('[data-cancel]').onclick = close;
-        el.querySelector('[data-stop]').onclick = function () {
-          close();
-          var rec = settleAndSave();
-          if (rec) UI.toast('已结算 ' + U.dur(rec.minutes) + '，今天到这儿');
-          A.views.timeline.render();
-        };
-        el.querySelector('[data-go]').onclick = function () {
-          var title = String(titleEl.value || '').trim();
-          if (!title) { UI.toast('请填任务名，或从清单里挑一个'); return; }
+        /* 统一入口：结算上一段 → 开始这一段 */
+        function doStart(title, cat, tags, taskId) {
+          title = String(title || '').trim();
+          if (!title) { UI.toast('请填任务名，或从清单里挑一个'); return false; }
           close();
           var prev = getRunning();
-          /* 先把上一段结算 */
           if (isRunning(prev)) {
             var p = settle();
             if (p && !p.skipped) {
@@ -198,7 +238,7 @@
               if (rr.overlap) UI.toast('上一段与已有记录时间重叠，两条都保留了');
             }
           }
-          startRun({ title: title, id: null, categoryId: pickCat, tagIds: pickTags });
+          startRun({ title: title, id: taskId || null, categoryId: cat || null, tagIds: tags || [] });
           /* 更新任务的使用时间 */
           var all = S.tasks();
           var hit = all.filter(function (x) { return x.title === title; })[0];
@@ -209,6 +249,40 @@
           }
           A.views.timeline.render();
           UI.toast('已开始：' + title);
+          return true;
+        }
+        A.views.timeline._doStart = doStart;
+
+        el.querySelectorAll('[data-pickstart]').forEach(function (b) {
+          b.onclick = function () {
+            var t = S.tasks().filter(function (x) { return x.id === b.dataset.pickstart; })[0];
+            if (!t) return;
+            doStart(t.title, t.categoryId, (t.tagIds || []).slice(), t.id);
+          };
+        });
+
+        /* 两个面板互切 */
+        var panelC = el.querySelector('#nt-panel-custom');
+        var panelL = el.querySelector('#nt-panel-list');
+        var goBtn = el.querySelector('[data-go]');
+        el.querySelector('#nt-tolist').onclick = function () {
+          panelC.style.display = 'none'; panelL.style.display = '';
+          if (goBtn) goBtn.style.display = 'none';
+        };
+        el.querySelector('#nt-tocustom').onclick = function () {
+          panelL.style.display = 'none'; panelC.style.display = '';
+          if (goBtn) goBtn.style.display = '';
+        };
+
+        el.querySelector('[data-cancel]').onclick = close;
+        el.querySelector('[data-stop]').onclick = function () {
+          close();
+          var rec = settleAndSave();
+          if (rec) UI.toast('已结算 ' + U.dur(rec.minutes) + '，今天到这儿');
+          A.views.timeline.render();
+        };
+        el.querySelector('[data-go]').onclick = function () {
+          doStart(titleEl.value, pickCat, pickTags, null);
         };
         setTimeout(function () { titleEl.focus(); }, 260);
       }
@@ -391,8 +465,25 @@
     if (!rec) return;
     var settings = S.settings();
     var html = '';
+    /* 这一段和别的段时间重叠时，先说清楚，并给出处理入口 */
+    var dups = S.records().filter(function (x) {
+      if (x.deleted || x.id === rec.id || x.date !== rec.date) return false;
+      if (!x.startTs || !x.endTs || !rec.startTs || !rec.endTs) return false;
+      return rec.startTs < x.endTs && rec.endTs > x.startTs;
+    });
+
     html += '<label class="label" style="margin-top:6px">任务名</label>';
     html += '<input class="input" id="rd-title" value="' + U.esc(rec.title) + '">';
+    if (dups.length) {
+      html += '<div class="warn">这段时间和下面 ' + dups.length + ' 段重叠（多台设备各自开始计时、同步上来后会出现，属正常）：<br>' +
+        dups.map(function (x) {
+          return '· ' + U.esc(x.title || '未命名') + '　' + U.esc(U.hhmm(x.startTs) + '–' + U.hhmm(x.endTs)) +
+            '　' + U.dur(x.minutes);
+        }).join('<br>') + '</div>';
+      html += '<div class="row wrap" style="margin-top:8px">' + dups.map(function (x) {
+        return '<button class="btn sm ghost" data-killother="' + x.id + '">删掉「' + U.esc(x.title || '未命名') + '」那条</button>';
+      }).join('') + '</div>';
+    }
     html += '<div class="row" style="margin-top:12px">' +
       '<div style="flex:1"><label class="label" style="margin-top:0">开始</label>' +
       '<input class="input" id="rd-start" type="time" value="' + U.esc(rec.start) + '"></div>' +
@@ -441,6 +532,26 @@
             var i = tags.indexOf(b.dataset.tag);
             if (i >= 0) tags.splice(i, 1); else tags.push(b.dataset.tag);
             b.classList.toggle('on', tags.indexOf(b.dataset.tag) >= 0);
+          };
+        });
+        el.querySelectorAll('[data-killother]').forEach(function (b) {
+          b.onclick = function () {
+            var oid = b.dataset.killother;
+            var other = S.records().filter(function (x) { return x.id === oid; })[0];
+            if (!other) return;
+            close();
+            UI.confirm('删掉「' + other.title + '」这一段？删掉后仍可从历史里找回旧版本。', '删除').then(function (ok) {
+              if (!ok) { openRecordSheetAfterEdit(rec.id); return; }
+              var all = S.records().map(function (x) {
+                if (x.id === oid) { x.deleted = true; x.updatedAt = new Date().toISOString(); }
+                return x;
+              });
+              S.saveRecords(all);
+              A.sync.markMonthOf(other);
+              A.sync.scheduleAuto(800);
+              A.views.timeline.render();
+              UI.toast('已删除，剩下的那段不再重叠');
+            });
           };
         });
         el.querySelectorAll('[data-delentry]').forEach(function (b) {
@@ -546,44 +657,60 @@
       html += '<div class="tl-hourlbl" style="top:' + (h * PXH) + 'px">' + U.pad(h) + ':00</div>';
     }
 
-    function blockHTML(r) {
-      var s = new Date(r.startTs), e = new Date(r.endTs);
-      var top = (s.getHours() * 60 + s.getMinutes()) / 60 * PXH;
-      var height = Math.max(26, (r.minutes || 0) / 60 * PXH);
-      var color = A.meta.subjColor(r.categoryId);
-      var t2 = r.start + '–' + r.end + ' · ' + U.dur(r.minutes);
-      var t3 = [A.meta.catName(r.categoryId)].concat(A.meta.tagNames(r.tagIds)).filter(Boolean).join(' · ');
-      return '<div class="tl-block" data-rec="' + r.id + '" style="top:' + top + 'px;height:' + height +
-        'px;border-left-color:' + color + '">' +
-        '<div class="t1">' + U.esc(r.title || '（未命名）') + '</div>' +
-        '<div class="t2">' + U.esc(t2) + '</div>' +
-        (height >= 52 && t3 ? '<div class="t3">' + U.esc(t3) + '</div>' : '') +
-        ((r.entries && r.entries.length) ? '<div class="t3">· ' + r.entries.length + ' 条记录</div>' : '') +
-        '</div>';
-    }
-
-    recs.forEach(function (r) { html += blockHTML(r); });
-
-    if (liveRec) {
-      var s2 = new Date(running.startTs);
-      var top2 = (s2.getHours() * 60 + s2.getMinutes()) / 60 * PXH;
-      html += '<div class="tl-block running" id="tl-live" style="top:' + top2 + 'px;height:26px;border-left-color:' +
-        A.meta.subjColor(running.categoryId) + '">' +
-        '<div class="t1">' + U.esc(running.title || '（未命名）') + '</div>' +
-        '<div class="t2" id="tl-live-t">' + U.hhmm(running.startTs) + '– 进行中</div></div>';
-    }
-
-    /* 另一台设备正在进行的那一段 —— 只读展示，起点是那台设备推上来的 */
+    /* 把「已有记录 + 正在进行的一段 + 另一台设备的一段」统一排进轨道，再逐个画 */
+    var items = recs.map(function (r) {
+      var s = r.startTs || 0;
+      return { rec: r, kind: 'rec', s: s, e: (r.endTs && r.endTs > s) ? r.endTs : (s + 60000) };
+    });
     var rr = A.sync.remoteRunning ? A.sync.remoteRunning() : null;
-    if (rr && !liveRec && rr.date === day) {
-      var s3 = new Date(rr.startTs);
-      var top3 = (s3.getHours() * 60 + s3.getMinutes()) / 60 * PXH;
-      var m3 = U.minutesBetween(rr.startTs, Date.now());
-      html += '<div class="tl-block remote" id="tl-remote" style="top:' + top3 + 'px;height:' +
-        Math.max(26, m3 / 60 * PXH) + 'px;border-left-color:' + A.meta.subjColor(rr.categoryId) + '">' +
-        '<div class="t1">' + U.esc(rr.title || '（未命名）') + '</div>' +
-        '<div class="t2" id="tl-remote-t">' + U.hhmm(rr.startTs) + '– 另一台设备正在进行 · 已 ' + U.dur(m3) + '</div></div>';
+    var showRemote = !!(rr && !liveRec && rr.date === day && rr.startTs);
+    if (liveRec) {
+      items.push({ rec: running, kind: 'live', s: running.startTs, e: Math.max(Date.now(), running.startTs + 60000) });
     }
+    if (showRemote) {
+      items.push({ rec: rr, kind: 'remote', s: rr.startTs, e: Math.max(Date.now(), rr.startTs + 60000) });
+    }
+    laneLayout(items);
+
+    items.forEach(function (it) {
+      var d = new Date(it.s);
+      var top = (d.getHours() * 60 + d.getMinutes()) / 60 * PXH;
+      var isLive = (it.kind === 'live' || it.kind === 'remote');
+      var mins = isLive ? U.minutesBetween(it.s, Date.now()) : (it.rec.minutes || 0);
+      var drawMin = isLive ? Math.max(1, mins) : (mins > 0 ? mins : 1);
+      var height = Math.max(isLive ? 40 : 10, drawMin / 60 * PXH);
+      var color = A.meta.recColor(it.rec);
+      var over = (it.lanes > 1) ? ' overlap' : '';
+      var style = 'top:' + top + 'px;height:' + height + 'px;border-left-color:' + color + ';' + laneStyle(it);
+      var fm = U.esc((it.rec.title || '未命名') + '　' + U.hhmm(it.s) + '–' +
+        (isLive ? '进行中' : U.hhmm(it.rec.endTs || it.e)) + '　' + U.dur(mins));
+
+      if (it.kind === 'live') {
+        html += '<div class="tl-block running' + over + '" id="tl-live" title="' + fm + '" style="' + style + '">' +
+          '<div class="t1">' + U.esc(it.rec.title || '（未命名）') + '</div>' +
+          '<div class="t2" id="tl-live-t">' + U.hhmm(it.s) + '– 进行中</div></div>';
+        return;
+      }
+      if (it.kind === 'remote') {
+        html += '<div class="tl-block remote' + over + '" id="tl-remote" title="' + fm + '" style="' + style + '">' +
+          '<div class="t1">' + U.esc(it.rec.title || '（未命名）') + '</div>' +
+          '<div class="t2" id="tl-remote-t">' + U.hhmm(it.s) + '– 另一台设备正在进行 · 已 ' + U.dur(mins) + '</div></div>';
+        return;
+      }
+      /* 太矮的段放不下字 —— 只留一条颜色，点开看详情（悬停也能看到） */
+      if (height < 26) {
+        html += '<div class="tl-block bar' + over + '" data-rec="' + it.rec.id + '" title="' + fm +
+          '" style="' + style + 'background:' + color + '"></div>';
+        return;
+      }
+      var t3 = [A.meta.catName(it.rec.categoryId)].concat(A.meta.tagNames(it.rec.tagIds)).filter(Boolean).join(' · ') || '未分类';
+      html += '<div class="tl-block' + over + '" data-rec="' + it.rec.id + '" title="' + fm + '" style="' + style + '">' +
+        '<div class="t1">' + U.esc(it.rec.title || '（未命名）') + '</div>' +
+        (height >= 46 ? '<div class="t2">' + U.esc(it.rec.start + '–' + it.rec.end + ' · ' + U.dur(mins)) + '</div>' : '') +
+        (height >= 76 ? '<div class="t3">' + U.esc(t3) + '</div>' : '') +
+        ((it.rec.entries && it.rec.entries.length) ? '<div class="t3">· ' + it.rec.entries.length + ' 条记录</div>' : '') +
+        '</div>';
+    });
 
     var nowMin = (new Date().getHours() * 60 + new Date().getMinutes());
     if (day === U.dateStr()) {
@@ -657,7 +784,7 @@
       if (r && el) {
         var top = (new Date(r.startTs).getHours() * 60 + new Date(r.startTs).getMinutes()) / 60 * PXH;
         el.style.top = top + 'px';
-        el.style.height = Math.max(26, mins / 60 * PXH) + 'px';
+        el.style.height = Math.max(40, Math.max(1, mins) / 60 * PXH) + 'px';
         if (t) t.textContent = U.hhmm(r.startTs) + '– 进行中 · 已 ' + U.dur(mins);
       }
       /* 另一台设备正在进行的那一段，也让它自己往前走 */
@@ -667,7 +794,7 @@
         var rt = document.getElementById('tl-remote-t');
         if (rr && rr.startTs) {
           var m2 = U.minutesBetween(rr.startTs, Date.now());
-          rel.style.height = Math.max(26, m2 / 60 * PXH) + 'px';
+          rel.style.height = Math.max(40, Math.max(1, m2) / 60 * PXH) + 'px';
           if (rt) rt.textContent = U.hhmm(rr.startTs) + '– 另一台设备正在进行 · 已 ' + U.dur(m2);
         }
       }
