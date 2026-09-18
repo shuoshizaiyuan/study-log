@@ -178,7 +178,10 @@
           /* 先把上一段结算 */
           if (isRunning(prev)) {
             var p = settle();
-            if (p) finishWithOverlap(p);
+            if (p) {
+              var rr = saveRecord(p);
+              if (rr.overlap) UI.toast('上一段与已有记录时间重叠，两条都保留了');
+            }
           }
           startRun({ title: title, id: null, categoryId: pickCat, tagIds: pickTags });
           /* 更新任务的使用时间 */
