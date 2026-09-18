@@ -134,6 +134,50 @@
     return res;
   }
 
+  /* ---------------- 另一台设备正在进行的时段 ---------------- */
+  /* 接手这一段：本机继续用同一个起点计时，并告诉那台设备停表。
+     这样两边记的是同一段时间，不会各记一条、时间打架。 */
+  function adoptRemote(rr) {
+    if (!rr || !rr.startTs) return false;
+    var prev = getRunning();
+    if (isRunning(prev)) {
+      var p = settle();
+      if (p && !p.skipped) saveRecord(p);
+    }
+    S.setRunning({
+      startTs: rr.startTs,
+      date: rr.date || U.dateStr(),
+      title: rr.title || '',
+      taskId: rr.taskId || null,
+      categoryId: rr.categoryId || null,
+      tagIds: (rr.tagIds || []).slice(),
+      adoptedFrom: rr.deviceId || null
+    });
+    A.sync.markRunning();
+    A.views.timeline.render();
+    UI.toast('已接着记「' + (rr.title || '这一段') + '」，另一台设备下次同步会自动停表', 4200);
+    return true;
+  }
+
+  function openRemoteSheet() {
+    var rr = A.sync.remoteRunning ? A.sync.remoteRunning() : null;
+    if (!rr) { A.views.timeline.render(); return; }
+    var mins = U.minutesBetween(rr.startTs, Date.now());
+    UI.sheet({
+      title: '另一台设备正在计时',
+      bodyHTML: '<p class="hint" style="margin:6px 0 10px;font-size:14px;color:var(--ink)">' +
+        '<b>' + U.esc(rr.title || '（未命名）') + '</b><br>' + U.hhmm(rr.startTs) + ' 开始，已经 ' + U.dur(mins) + '</p>' +
+        '<div class="hint">如果其实就是同一件事（你刚换到这台设备继续做），点「接着记」——两边会用同一段时间，' +
+        '另一台设备下次同步会自动停表，不会记成两条重叠的记录。</div>',
+      footHTML: '<button class="btn ghost" data-no>知道了</button>' +
+        '<button class="btn primary" data-yes>接着记</button>',
+      onMount: function (el, close) {
+        el.querySelector('[data-no]').onclick = function () { close(); };
+        el.querySelector('[data-yes]').onclick = function () { close(); adoptRemote(rr); };
+      }
+    });
+  }
+
   /* ---------------- 任务选择弹层 ---------------- */
   function openNextSheet() {
     var tasks = S.tasks().filter(function (t) { return !t.archived; });
@@ -143,6 +187,16 @@
     var QUADL = (A.views.tasks && A.views.tasks.QUAD) || [];
 
     var html = '';
+
+    /* 另一台设备正在计时 —— 先提醒，避免两台设备各记一段、时间打架 */
+    var rr0 = A.sync.remoteRunning ? A.sync.remoteRunning() : null;
+    if (rr0) {
+      html += '<div class="warn">另一台设备正在计时：<b>' + U.esc(rr0.title || '（未命名）') + '</b>（' +
+        U.hhmm(rr0.startTs) + ' 开始，已 ' + U.dur(U.minutesBetween(rr0.startTs, Date.now())) + '）<br>' +
+        '如果其实是同一件事，点「接着记这一段」，两边就不会各记一条。</div>';
+      html += '<div style="margin-top:8px"><button class="btn sm block" data-adoptnow>接着记这一段</button></div>';
+    }
+
     /* —— 面板一：手动输入 —— */
     html += '<div id="nt-panel-custom">';
     html += '<label class="label" style="margin-top:6px">任务名</label>';
@@ -252,6 +306,13 @@
           return true;
         }
         A.views.timeline._doStart = doStart;
+
+        var adoptBtn = el.querySelector('[data-adoptnow]');
+        if (adoptBtn) adoptBtn.onclick = function () {
+          var r0 = A.sync.remoteRunning ? A.sync.remoteRunning() : null;
+          close();
+          if (r0) adoptRemote(r0);
+        };
 
         el.querySelectorAll('[data-pickstart]').forEach(function (b) {
           b.onclick = function () {
@@ -692,7 +753,7 @@
         return;
       }
       if (it.kind === 'remote') {
-        html += '<div class="tl-block remote' + over + '" id="tl-remote" title="' + fm + '" style="' + style + '">' +
+        html += '<div class="tl-block remote' + over + '" id="tl-remote" data-remote="1" title="' + fm + '" style="' + style + '">' +
           '<div class="t1">' + U.esc(it.rec.title || '（未命名）') + '</div>' +
           '<div class="t2" id="tl-remote-t">' + U.hhmm(it.s) + '– 另一台设备正在进行 · 已 ' + U.dur(mins) + '</div></div>';
         return;
@@ -809,8 +870,9 @@
 
   function bind(rootEl) {
     rootEl.addEventListener('click', function (e) {
-      var t = e.target.closest ? e.target.closest('[data-act],[data-rec],[data-day]') : null;
+      var t = e.target.closest ? e.target.closest('[data-act],[data-rec],[data-day],[data-remote]') : null;
       if (!t) return;
+      if (t.hasAttribute('data-remote')) { openRemoteSheet(); return; }
       if (t.hasAttribute('data-day')) {
         var d = new Date(A.state.tlDay + 'T00:00:00');
         d.setDate(d.getDate() + (+t.getAttribute('data-day')));
@@ -831,6 +893,8 @@
     bind: bind,
     openEntrySheet: openEntrySheet,
     openNextSheet: openNextSheet,
+    openRemoteSheet: openRemoteSheet,
+    adoptRemote: adoptRemote,
     /* 供 app.js 在结算时取用暂存的"进行中条目" */
     takeLiveEntries: function (startTs) {
       var m = S.meta();

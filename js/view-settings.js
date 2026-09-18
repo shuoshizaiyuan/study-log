@@ -55,12 +55,20 @@
     }
     var lrNow = A.sync.localRunningPayload ? A.sync.localRunningPayload().running : null;
     var rrNow = A.sync.remoteRunning ? A.sync.remoteRunning() : null;
+    var rp = A.sync.runPushState ? A.sync.runPushState() : null;
     if (lrNow) {
-      html += '<div class="hint">本机正在计时：<b>' + U.esc(lrNow.title || '（未命名）') + '</b>（' +
-        U.hhmm(lrNow.startTs) + ' 开始）。点「立即同步」会把它一起推上去，别的设备就能看到。</div>';
+      var line = '本机正在计时：<b>' + U.esc(lrNow.title || '（未命名）') + '</b>（' + U.hhmm(lrNow.startTs) + ' 开始）';
+      if (!cfg.enabled) line += '　— 同步没开，别的设备看不到';
+      else if (rp && rp.ok && rp.running) line += '　— <b>已上传</b>（' + U.hhmm(rp.at) + '），别的设备打开就能看到';
+      else if (rp && rp.at && !rp.ok) line += '　— <b style="color:var(--red)">没传上去：' + U.esc(rp.msg || '未知原因') + '</b>';
+      else line += '　— 还没上传';
+      html += '<div class="hint">' + line + '</div>';
+      if (rp && rp.at && !rp.ok && cfg.enabled) {
+        html += '<div style="margin-top:8px"><button class="btn sm" id="s-runpush">重试上传"正在计时"</button></div>';
+      }
     } else if (rrNow) {
       html += '<div class="hint">云端当前的进行中任务：<b>' + U.esc(rrNow.title || '（未命名）') + '</b>（' +
-        U.hhmm(rrNow.startTs) + ' 开始，来自另一台设备）</div>';
+        U.hhmm(rrNow.startTs) + ' 开始，来自另一台设备）—— 到时间轴点那个色块可以「接着记」。</div>';
     }
     html += '</div>';
 
@@ -315,6 +323,18 @@
       var t = el.closest ? el.closest('[data-mode],[data-ex],[data-cat],[data-renamecat],[data-delcat],[data-deltag],[data-delpreset]') : null;
 
       /* 同步设置 */
+      if (el.id === 's-runpush') {
+        A.sync.markRunning();
+        UI.toast('正在重试上传"进行中的任务"…');
+        setTimeout(function () {
+          var st = A.sync.runPushState();
+          if (st && st.ok) UI.toast('已上传，另一台设备打开就能看到');
+          else UI.toast('还是没传上去：' + ((st && st.msg) || '未知原因'), 7000);
+          render();
+        }, 2500);
+        return;
+      }
+
       if (el.id === 's-save' || el.id === 's-test' || el.id === 's-sync' || el.id === 's-enable' || el.id === 's-diag') {
         if (el.id === 's-diag') { runDiag(); return; }
         var cfg = {

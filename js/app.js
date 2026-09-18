@@ -124,25 +124,38 @@
     var cfg = S.syncCfg();
     if (cfg.enabled && cfg.owner && cfg.repo && cfg.token) {
       A.sync.setStatus('busy');
-      A.sync.pull().then(function () {
+      A.sync.pull().then(function (r) {
         if (A.state.view === 'timeline') A.views.timeline.render();
-        UI.toast('已从云端取回最新数据');
+        if (r && r.tookOver) UI.toast('这段已被另一台设备接手，本机已停止计时', 5000);
+        else UI.toast('已从云端取回最新数据');
       }).catch(function (e) {
-        UI.toast('同步失败：' + e.message + '（数据仍在本机，不会丢）');
+        UI.toast('同步失败：' + e.message + '（数据仍在本机，不会丢）', 6000);
       });
     } else {
       A.sync.setStatus('idle');
     }
 
-    /* 切回前台时补一次同步 */
+    /* 开机时如果本机还有一段没结束的计时，立刻广播一次，让别的设备看得到 */
+    if (S.running() && S.running().startTs) {
+      setTimeout(function () { A.sync.markRunning(); }, 600);
+    }
+
+    /* 切后台 / 锁屏前立刻把"正在计时"推上去；切回前台再补一次全量同步 */
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'visible') {
-        var c = S.syncCfg();
-        if (c.enabled && c.owner && c.repo && c.token) A.sync.scheduleAuto(400);
-        if (A.state.view === 'timeline' && A.views.timeline.isRunning()) {
-          A.views.timeline.render();
-        }
+      if (document.visibilityState === 'hidden') {
+        if (S.running() && S.running().startTs) A.sync.markRunning();
+        return;
       }
+      var c = S.syncCfg();
+      if (c.enabled && c.owner && c.repo && c.token) A.sync.scheduleAuto(400);
+      if (A.state.view === 'timeline' && A.views.timeline.isRunning()) {
+        A.views.timeline.render();
+      }
+    });
+
+    /* 离开页面（关标签 / 跳走）时也尽力推一次 */
+    window.addEventListener('pagehide', function () {
+      if (S.running() && S.running().startTs) A.sync.markRunning();
     });
 
     /* 离线缓存（可选项，失败不影响使用） */

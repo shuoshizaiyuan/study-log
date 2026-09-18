@@ -139,13 +139,57 @@
       taskId: r.taskId || null,
       categoryId: r.categoryId || null,
       tagIds: r.tagIds || [],
-      deviceId: deviceId()
+      deviceId: deviceId(),
+      /* 如果本机这段是"接手"了另一台设备的，要带上，让那台设备知道停表 */
+      adoptedFrom: r.adoptedFrom || null
     } : null;
     return { running: out, deviceId: deviceId(), updatedAt: new Date().toISOString() };
   }
 
-  /* 开始 / 结束计时时调用：把"进行中时段"标为待上传 */
-  function markRunning() { markDirty('running', 'running'); }
+  /* 开始 / 结束计时时调用。
+     注意：这里**不等常规节流**（那会把上传推迟最多 8 秒，手机一切走就永远传不上去），
+     而是立刻单独把 running.json 推上去（只有 2 个请求）。 */
+  var runPushing = false, runPending = false, runKick = false, lastRunPush = null;
+
+  function effectRunPush() {
+    var payload = localRunningPayload();
+    return putWithRetry(RUNNING_FILE, JSON.stringify(payload, null, 2),
+      'running: ' + (payload.running ? payload.running.title : 'idle'), 2)
+      .then(function () {
+        clearDirty('running', ['running']);
+        lastRunPush = { ok: true, at: Date.now(), running: !!payload.running, title: payload.running ? payload.running.title : '' };
+      })
+      .catch(function (e) {
+        /* 失败不吞掉：保留待传标记，下一次常规同步会补上 */
+        lastRunPush = { ok: false, at: Date.now(), msg: (e && e.message) || String(e) };
+      });
+  }
+
+  function pushRunningNow() {
+    runPending = true;
+    if (runPushing || runKick) return;      /* 同一个同步块内的多次调用会合并成一次 */
+    runKick = true;
+    Promise.resolve().then(function () {     /* 微任务：等本轮同步代码全部跑完再推最终状态 */
+      runKick = false;
+      if (!runPending || runPushing) return;
+      var c = A.gh.cfg();
+      if (!c.ready) { runPending = false; lastRunPush = { ok: false, at: Date.now(), msg: '同步未开启' }; return; }
+      runPushing = true;
+      (function step() {
+        if (!runPending) { runPushing = false; return; }
+        runPending = false;
+        effectRunPush().then(function () { if (runPending) step(); else runPushing = false; });
+      })();
+    });
+  }
+
+  function markRunning() {
+    markDirty('running', 'running');
+    pushRunningNow();
+  }
+
+  /* 上一次"进行中时段"上传的结果（设置页显示用） */
+  function runPushState() { return lastRunPush; }
 
   /* 云端那份"进行中时段"，且不是本机推的 —— 用来在别的设备上显示 */
   function remoteRunning() {
@@ -186,14 +230,28 @@
     }).then(function (f) {
       var data = null;
       try { data = f ? JSON.parse(f.text) : null; } catch (e) { data = null; }
-      var prev = S.meta().remoteRunning;
+      var mm0 = S.meta();
+      var prev = mm0.remoteRunning;
       var next = (data && data.running && data.running.startTs) ? data.running : null;
       var changed = String((prev && prev.startTs) || '') !== String((next && next.startTs) || '') ||
         String((prev && prev.deviceId) || '') !== String((next && next.deviceId) || '');
-      var mm0 = S.meta();
+      var me = deviceId();
+
+      /* 本机这段被另一台设备"接手"了 → 本机立刻停表，且**不产生记录**（避免同一时段记成两条）。
+         这里故意不回推 null：云端那份是接手方推的，应该让它继续存在。 */
+      if (next && next.adoptedFrom && next.adoptedFrom === me && next.deviceId !== me) {
+        var cur = S.running();
+        if (cur && cur.startTs) {
+          if (mm0.liveEntries && mm0.liveEntries[cur.startTs]) delete mm0.liveEntries[cur.startTs];
+          summary.tookOver = true;
+        }
+        mm0.takeover = { at: new Date().toISOString(), title: next.title || '', startTs: next.startTs };
+      }
+
       mm0.remoteRunning = next;
       mm0.remoteRunningAt = (data && data.updatedAt) || '';
       S.saveMeta(mm0);
+      if (summary.tookOver) S.setRunning(null);
       summary.running = true;
       summary.runningChanged = changed;
       return A.gh.listDir('records');
@@ -207,6 +265,14 @@
         var mo = monthOf(r);
         if (months.indexOf(mo) < 0) months.push(mo);
       });
+      /* 兜底：目录列举失败（或不巧是空的）时，最近两个月一定要读一遍，
+         否则新设备第一次同步可能什么都取不到 */
+      if (!(list || []).length) {
+        var dnow = new Date();
+        [U.monthStr(dnow), U.monthStr(new Date(dnow.getFullYear(), dnow.getMonth() - 1, 1))].forEach(function (mo) {
+          if (months.indexOf(mo) < 0) months.push(mo);
+        });
+      }
       return months.reduce(function (p, mo) {
         return p.then(function () {
           return A.gh.readFile(recordsFilePath(mo)).then(function (f) {
@@ -358,7 +424,12 @@
     syncing = true;
     lastAt = Date.now();
     return fullSync().then(function (r) {
-      if (r && r.runningChanged) refreshTimeline();
+      if (r && r.tookOver) {
+        refreshTimeline();
+        A.ui.toast('这段已被另一台设备接手，本机已停止计时（不会重复记一条）', 5000);
+      } else if (r && r.runningChanged) {
+        refreshTimeline();
+      }
       return r;
     }).catch(function (e) {
       /* 静默：状态点已提示，设置页也能看到详情 */
@@ -388,6 +459,8 @@
     scheduleAuto: scheduleAuto,
     runNow: runNow,
     markRunning: markRunning,
+    pushRunningNow: pushRunningNow,
+    runPushState: runPushState,
     remoteRunning: remoteRunning,
     localRunningPayload: localRunningPayload,
     deviceId: deviceId,
