@@ -36,10 +36,20 @@
       '<div class="hint">密钥只保存在这台设备本机，不会写进网页代码、也不会同步到别处。每台设备各填一次。</div>';
     html += '<label class="label">开关</label><div class="row wrap">' +
       '<button class="chip' + (cfg.enabled ? ' on' : '') + '" id="s-enable">' + (cfg.enabled ? '已开启同步' : '同步已关闭') + '</button></div>';
-    html += '<div class="row" style="margin-top:14px;gap:8px">' +
+    html += '<div class="row wrap" style="margin-top:14px;gap:8px">' +
       '<button class="btn sm" id="s-test">测试连接</button>' +
       '<button class="btn sm" id="s-save">保存设置</button>' +
-      '<button class="btn sm primary" id="s-sync">立即同步</button></div>';
+      '<button class="btn sm primary" id="s-sync">立即同步</button>' +
+      '<button class="btn sm" id="s-diag">诊断</button></div>';
+    var last = S.meta().lastSync;
+    if (last) {
+      html += '<div style="margin-top:12px;padding:10px 12px;border-radius:10px;background:' +
+        (last.ok ? 'var(--teal-l)' : 'var(--red-l)') + '">' +
+        '<div style="font-size:12.5px;font-weight:500;color:' + (last.ok ? 'var(--teal)' : 'var(--red)') + '">' +
+        '上次同步：' + (last.ok ? '成功' : '失败') + '　' + U.esc(String(last.at).slice(0, 19).replace('T', ' ')) + '</div>' +
+        (last.msg ? '<div style="font-size:12px;color:var(--ink2);margin-top:4px;word-break:break-all">原因：' + U.esc(last.msg) + '</div>' : '') +
+        '</div>';
+    }
     if (q.length) {
       html += '<div class="hint" style="color:#854F0B">有 ' + q.length + ' 张图片还在等待上传，联网后会自动补传。</div>';
     }
@@ -141,6 +151,99 @@
     return d;
   }
 
+  /* 同步诊断：把整条链路拆成 6 步，逐条给出 HTTP 状态与原文 */
+  function runDiag() {
+    var cfg = S.syncCfg();
+    var steps = [];
+    function add(name, ok, detail) { steps.push({ name: name, ok: ok, detail: detail || '' }); }
+
+    var miss = [];
+    if (!cfg.owner) miss.push('账号');
+    if (!cfg.repo) miss.push('数据仓库名');
+    if (!cfg.token) miss.push('密钥');
+    add('1. 本地配置是否填全', miss.length === 0,
+      miss.length ? '还差：' + miss.join('、') : '账号 / 仓库 / 分支 / 密钥都在（分支=' + (cfg.branch || 'main') + '）');
+
+    var tk = String(cfg.token || '');
+    var fmtOk = /^github_pat_[A-Za-z0-9_]+$/.test(tk);
+    add('2. 密钥格式', fmtOk, fmtOk
+      ? '前缀 github_pat_ 正确，长度 ' + tk.length
+      : (tk ? '看起来不对：长度 ' + tk.length + '，开头是「' + tk.slice(0, 14) + '…」——正确应以 github_pat_ 开头，且不能夹空格或换行'
+        : '没填'));
+
+    var base = 'https://api.github.com';
+    var head = {
+      'Authorization': 'Bearer ' + tk,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28'
+    };
+    function hit(url) {
+      return fetch(url, { headers: head, cache: 'no-store' }).then(function (r) {
+        return r.text().then(function (tx) {
+          var d = null; try { d = JSON.parse(tx); } catch (e) { }
+          return { status: r.status, ok: r.ok, data: d, raw: tx };
+        });
+      });
+    }
+    function msgOf(res) { return (res.data && res.data.message) || String(res.raw || '').slice(0, 90); }
+
+    function s3() {
+      /* 这个接口不需要任何权限，专门用来判断"网络是否通" */
+      return fetch(base + '/rate_limit', { headers: head, cache: 'no-store' })
+        .then(function (r) { add('3. 手机能不能连上 api.github.com', r.ok, 'HTTP ' + r.status + (r.ok ? '（网络通）' : '（网络有问题）')); })
+        .catch(function (e) { add('3. 手机能不能连上 api.github.com', false, '连不上：' + e.message + '　——这一步失败基本都是网络问题，换个网络（切流量 / 换 Wi-Fi）再试'); });
+    }
+    function s4() {
+      if (!cfg.owner || !cfg.repo) { add('4. 能不能读到那个数据仓库', false, '账号或仓库名没填，跳过'); return Promise.resolve(); }
+      return hit(base + '/repos/' + cfg.owner + '/' + cfg.repo).then(function (r) {
+        if (r.ok) add('4. 能不能读到那个数据仓库', true,
+          '成功：' + r.data.full_name + (r.data.private ? '（私有）' : '（⚠️ 是公开的！）') + '　默认分支 ' + r.data.default_branch);
+        else add('4. 能不能读到那个数据仓库', false, 'HTTP ' + r.status + '　' + msgOf(r) +
+          (r.status === 404 ? '　——账号名或仓库名写错了，或这把密钥没勾中这个仓库' :
+            r.status === 401 ? '　——密钥不对或已失效' : ''));
+      }).catch(function (e) { add('4. 能不能读到那个数据仓库', false, '连不上：' + e.message); });
+    }
+    function s5() {
+      if (!cfg.owner || !cfg.repo) { add('5. 能不能读到里面的文件', false, '跳过'); return Promise.resolve(); }
+      return hit(base + '/repos/' + cfg.owner + '/' + cfg.repo + '/contents/records?ref=' + encodeURIComponent(cfg.branch || 'main'))
+        .then(function (r) {
+          if (r.ok) add('5. 能不能读到里面的文件', true, '成功，records 目录下有 ' + (Array.isArray(r.data) ? r.data.length : 0) + ' 项');
+          else add('5. 能不能读到里面的文件', false, 'HTTP ' + r.status + '　' + msgOf(r) +
+            (r.status === 404 ? '　——分支名或文件路径不对' : ''));
+        }).catch(function (e) { add('5. 能不能读到里面的文件', false, '连不上：' + e.message); });
+    }
+    function s6() {
+      if (!cfg.owner || !cfg.repo) { add('6. 读写权限', false, '跳过'); return Promise.resolve(); }
+      return hit(base + '/repos/' + cfg.owner + '/' + cfg.repo + '/contents/settings.json?ref=' + encodeURIComponent(cfg.branch || 'main'))
+        .then(function (r) {
+          if (r.ok) add('6. 读写权限', true, '读到了 settings.json（sha ' + String(r.data.sha).slice(0, 8) + '）');
+          else add('6. 能不能读到里面的文件', false, 'HTTP ' + r.status + '　' + msgOf(r) +
+            (r.status === 403 ? '　——密钥的 Contents 权限不够（要 Read and write）' : ''));
+        }).catch(function (e) { add('6. 读写权限', false, '连不上：' + e.message); });
+    }
+
+    UI.sheet({
+      title: '同步诊断',
+      bodyHTML: '<div id="dg-out"><p class="hint" style="margin:8px 0">正在逐项检查…</p></div>',
+      footHTML: '<button class="btn ghost" data-close2>关闭</button>',
+      onMount: function (el, close) {
+        el.querySelector('[data-close2]').onclick = close;
+        var outEl = el.querySelector('#dg-out');
+        function show() {
+          outEl.innerHTML = steps.map(function (s) {
+            return '<div style="padding:9px 0;border-bottom:1px solid var(--line)">' +
+              '<div style="font-size:13px;font-weight:500;color:' + (s.ok ? '#0F6E56' : '#A32D2D') + '">' +
+              (s.ok ? '通过　' : '失败　') + U.esc(s.name) + '</div>' +
+              '<div style="font-size:12px;color:var(--ink2);margin-top:3px;word-break:break-all">' + U.esc(s.detail) + '</div>' +
+              '</div>';
+          }).join('') + '<div class="hint" style="margin-top:12px">把这一段截图发我，我就能定位。</div>';
+        }
+        show();
+        s3().then(s4).then(s5).then(s6).then(show).catch(function (e) { add('诊断本身出错', false, e.message); show(); });
+      }
+    });
+  }
+
   function previewSheet(title, text, filename) {
     UI.sheet({
       title: title,
@@ -184,7 +287,8 @@
       var t = el.closest ? el.closest('[data-mode],[data-ex],[data-cat],[data-renamecat],[data-delcat],[data-deltag],[data-delpreset]') : null;
 
       /* 同步设置 */
-      if (el.id === 's-save' || el.id === 's-test' || el.id === 's-sync' || el.id === 's-enable') {
+      if (el.id === 's-save' || el.id === 's-test' || el.id === 's-sync' || el.id === 's-enable' || el.id === 's-diag') {
+        if (el.id === 's-diag') { runDiag(); return; }
         var cfg = {
           owner: (document.getElementById('s-owner').value || '').trim(),
           repo: (document.getElementById('s-repo').value || '').trim(),
@@ -200,15 +304,32 @@
           }
         }
         S.saveSyncCfg(cfg);
-        if (el.id === 's-enable') { render(); UI.toast(cfg.enabled ? '同步已开启' : '同步已关闭'); return; }
+        if (el.id === 's-enable') {
+          render();
+          if (cfg.enabled) {
+            UI.toast('同步已开启，正在试一次…');
+            A.sync.fullSync().then(function () {
+              UI.toast('首次同步成功', 3000); render();
+            }).catch(function (err) {
+              UI.toast('首次同步失败：' + err.message + '（可点「诊断」看卡在哪一步）', 9000); render();
+            });
+          } else {
+            UI.toast('同步已关闭');
+          }
+          return;
+        }
         if (el.id === 's-save') { UI.toast('已保存'); render(); return; }
         if (el.id === 's-test') {
           S.saveSyncCfg(Object.assign({}, cfg, { enabled: true }));
           UI.toast('正在测试…');
           A.gh.ping().then(function (d) {
-            UI.toast('连接成功：' + d.repo + (d.private ? '（私有）' : '（公开，注意隐私）'));
+            A.sync.noteResult(true, '测试连接成功');
+            UI.toast('连接成功：' + d.repo + (d.private ? '（私有）' : '（公开，注意隐私）'), 3000);
+            render();
           }).catch(function (err) {
-            UI.toast('连接失败：' + err.message);
+            A.sync.noteResult(false, err.message);
+            UI.toast('连接失败：' + err.message + '（可点「诊断」看卡在哪一步）', 9000);
+            render();
           });
           return;
         }
@@ -216,9 +337,12 @@
           S.saveSyncCfg(Object.assign({}, cfg, { enabled: true }));
           UI.toast('正在同步…');
           A.sync.fullSync().then(function (r) {
-            UI.toast('同步完成，本月处理 ' + ((r && r.months) || []).length + ' 个文件');
+            UI.toast('同步完成，本月处理 ' + ((r && r.months) || []).length + ' 个文件', 3000);
             render();
-          }).catch(function (err) { UI.toast('同步失败：' + err.message); });
+          }).catch(function (err) {
+            UI.toast('同步失败：' + err.message + '（可点「诊断」看卡在哪一步）', 9000);
+            render();
+          });
           return;
         }
       }

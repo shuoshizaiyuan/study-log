@@ -111,6 +111,15 @@
   function monthOf(record) { return (record.date || '').slice(0, 7) || U.monthStr(); }
   function recordsFilePath(month) { return 'records/' + month + '.json'; }
 
+  /* 记录最近一次同步结果，供设置页显示与排查 */
+  function noteResult(ok, msg) {
+    try {
+      var m = S.meta();
+      m.lastSync = { ok: !!ok, msg: String(msg || ''), at: new Date().toISOString() };
+      S.saveMeta(m);
+    } catch (e) { /* 记录失败不影响同步本身 */ }
+  }
+
   /* ================= 拉取 + 合并 ================= */
   function pull() {
     var c = A.gh.cfg();
@@ -166,9 +175,11 @@
       }, Promise.resolve());
     }).then(function () {
       setStatus('ok');
+      noteResult(true, '');
       return summary;
     }).catch(function (e) {
       setStatus('err');
+      noteResult(false, e.message || String(e));
       throw e;
     });
   }
@@ -216,9 +227,11 @@
     });
     return chain.then(pushPendingImages).then(function () {
       setStatus('ok');
+      noteResult(true, '');
       return { ok: true };
     }).catch(function (e) {
       setStatus('err');
+      noteResult(false, e.message || String(e));
       throw e;
     });
   }
@@ -276,6 +289,7 @@
 
   A.sync = {
     pull: pull, push: push, fullSync: fullSync,
+    noteResult: noteResult,
     scheduleAuto: scheduleAuto,
     markDirty: markDirty,
     dirtyOf: dirtyOf,
