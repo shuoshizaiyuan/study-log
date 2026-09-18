@@ -23,11 +23,11 @@
       return d.getFullYear() + '-' + U.pad(d.getMonth() + 1);
     },
     hhmm: function (d) {
-      d = d instanceof Date ? d : new Date(d);
+      d = (d === undefined || d === null) ? new Date() : (d instanceof Date ? d : new Date(d));
       return U.pad(d.getHours()) + ':' + U.pad(d.getMinutes());
     },
     hhmmss: function (d) {
-      d = d instanceof Date ? d : new Date(d);
+      d = (d === undefined || d === null) ? new Date() : (d instanceof Date ? d : new Date(d));
       return U.hhmm(d) + ':' + U.pad(d.getSeconds());
     },
     parseHm: function (s) {
@@ -187,6 +187,7 @@
 
   /* ---------------- 数据模型 ---------------- */
   var Model = A.model = {
+    clone: U.clone,
     newRecord: function (o) {
       o = o || {};
       var now = new Date().toISOString();
@@ -306,10 +307,18 @@
         (opt.footHTML ? '<div class="sheet-foot">' + opt.footHTML + '</div>' : '');
       rootEl.appendChild(mask); rootEl.appendChild(sh);
 
+      var closed = false;
       function close() {
+        if (closed) return;
+        closed = true;
         sh.classList.remove('open'); mask.classList.remove('open');
-        rootEl.classList.remove('on');
-        setTimeout(function () { rootEl.innerHTML = ''; }, 240);
+        /* 立刻放开点击，避免关闭后这两百多毫秒里整页点不动 */
+        if (!rootEl.querySelector('.lightbox')) rootEl.classList.remove('on');
+        /* 只回收自己这两个节点，绝不整块清空，避免把随后新开的弹层一起抹掉 */
+        setTimeout(function () {
+          if (sh.parentNode) sh.remove();
+          if (mask.parentNode) mask.remove();
+        }, 240);
         if (opt.onClose) opt.onClose();
       }
       mask.addEventListener('click', close);
@@ -323,16 +332,18 @@
     closeSheet: function () { if (A.ui._closeSheet) A.ui._closeSheet(); },
     confirm: function (msg, okText) {
       return new Promise(function (resolve) {
+        var done = false;
+        function finish(v) { if (done) return; done = true; resolve(v); }
         var r = A.ui.sheet({
           title: '请确认',
           bodyHTML: '<p style="font-size:14px;line-height:1.8;margin:8px 0 4px">' + U.esc(msg) + '</p>',
           footHTML: '<button class="btn ghost" data-no>取消</button>' +
             '<button class="btn primary" data-yes>' + U.esc(okText || '确定') + '</button>',
           onMount: function (el, close) {
-            el.querySelector('[data-no]').onclick = function () { close(); resolve(false); };
-            el.querySelector('[data-yes]').onclick = function () { close(); resolve(true); };
+            el.querySelector('[data-no]').onclick = function () { finish(false); close(); };
+            el.querySelector('[data-yes]').onclick = function () { finish(true); close(); };
           },
-          onClose: function () { resolve(false); }
+          onClose: function () { finish(false); }
         });
         void r;
       });
@@ -356,8 +367,15 @@
       var wrap = document.createElement('div');
       wrap.className = 'lightbox';
       wrap.innerHTML = '<button class="lbx">关闭</button><img src="' + url + '" alt="">';
-      wrap.querySelector('.lbx').onclick = function () { wrap.remove(); };
-      wrap.onclick = function (e) { if (e.target === wrap) wrap.remove(); };
+      function shut() {
+        if (!wrap.parentNode) return;
+        wrap.remove();
+        if (!rootEl.querySelector('.sheet') && !rootEl.querySelector('.lightbox')) {
+          rootEl.classList.remove('on');
+        }
+      }
+      wrap.querySelector('.lbx').onclick = shut;
+      wrap.onclick = function (e) { if (e.target === wrap) shut(); };
       rootEl.appendChild(wrap);
       rootEl.classList.add('on');
     }
