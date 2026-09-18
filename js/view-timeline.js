@@ -27,9 +27,17 @@
   function settle(extraEntries) {
     var r = S.running();
     if (!isRunning(r)) return null;
-    var endTs = Date.now();
-    if (endTs - r.startTs < 30 * 1000) endTs = r.startTs + 30 * 1000; /* 至少 30 秒 */
     var stashed = A.views.timeline.takeLiveEntries(r.startTs);
+    var extra = (extraEntries || []);
+    var endTs = Date.now();
+    var dur = endTs - r.startTs;
+    /* 不到 1 分钟且什么都没记：当作误触，不产生记录，避免假数据与重叠提示 */
+    if (dur < 60 * 1000 && !stashed.length && !extra.length) {
+      S.setRunning(null);
+      return { skipped: true, title: r.title };
+    }
+    /* 有内容但太短：补足 1 分钟，避免起止落到同一分钟而无法编辑 */
+    if (dur < 60 * 1000) endTs = r.startTs + 60 * 1000;
     var rec = A.model.newRecord({
       date: r.date,
       start: U.hhmm(r.startTs),
@@ -41,7 +49,7 @@
       taskId: r.taskId,
       categoryId: r.categoryId,
       tagIds: r.tagIds,
-      entries: stashed.concat(extraEntries || [])
+      entries: stashed.concat(extra)
     });
     S.setRunning(null);
     return rec;
@@ -51,6 +59,7 @@
   function settleAndSave() {
     var rec = settle(null);
     if (!rec) return null;
+    if (rec.skipped) { UI.toast('刚才那段不到 1 分钟，没有产生记录'); return null; }
     var res = saveRecord(rec);
     if (res.overlap) finishWithOverlap(rec);
     return rec;
@@ -178,7 +187,7 @@
           /* 先把上一段结算 */
           if (isRunning(prev)) {
             var p = settle();
-            if (p) {
+            if (p && !p.skipped) {
               var rr = saveRecord(p);
               if (rr.overlap) UI.toast('上一段与已有记录时间重叠，两条都保留了');
             }
@@ -479,7 +488,9 @@
           close();
           var res = saveRecord(draft);
           if (res.overlap) {
-            UI.toast('与已有记录重叠，已保存（可稍后调整）');
+            /* 用户是主动改这一段，重叠也照样保存，并且如实说明 */
+            forceSave(draft);
+            UI.toast('已保存（这段和其他记录有重叠）');
           } else {
             UI.toast('已保存');
           }
