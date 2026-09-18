@@ -26,9 +26,9 @@
     html += '<div class="sec-title">数据仓库（同步）</div>';
     html += '<div class="card"><h3>你的记录会存到这里</h3>';
     html += '<label class="label" style="margin-top:0">账号</label>' +
-      '<input class="input" id="s-owner" value="' + U.esc(cfg.owner) + '" placeholder="例如 shuoshizaiyuan" autocapitalize="off" autocorrect="off">';
+      '<input class="input" id="s-owner" value="' + U.esc(cfg.owner) + '" placeholder="你的 GitHub 用户名" autocapitalize="off" autocorrect="off">';
     html += '<label class="label">数据仓库名</label>' +
-      '<input class="input" id="s-repo" value="' + U.esc(cfg.repo) + '" placeholder="例如 study-log-data" autocapitalize="off" autocorrect="off">';
+      '<input class="input" id="s-repo" value="' + U.esc(cfg.repo) + '" placeholder="你建的那个私有仓库名" autocapitalize="off" autocorrect="off">';
     html += '<label class="label">分支</label>' +
       '<input class="input" id="s-branch" value="' + U.esc(cfg.branch || 'main') + '" placeholder="main" autocapitalize="off" autocorrect="off">';
     html += '<label class="label">细粒度密钥（只授权这一个仓库）</label>' +
