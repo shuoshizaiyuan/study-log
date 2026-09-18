@@ -22,6 +22,9 @@
       categoryId: task.categoryId || null,
       tagIds: task.tagIds || []
     });
+    /* 把起点推上去，别的设备就能看到"正在进行" */
+    A.sync.markRunning();
+    A.sync.scheduleAuto(300);
   }
   /* 结算当前段 → 生成一条记录 */
   function settle(extraEntries) {
@@ -34,6 +37,7 @@
     /* 不到 1 分钟且什么都没记：当作误触，不产生记录，避免假数据与重叠提示 */
     if (dur < 60 * 1000 && !stashed.length && !extra.length) {
       S.setRunning(null);
+      A.sync.markRunning();
       return { skipped: true, title: r.title };
     }
     /* 有内容但太短：补足 1 分钟，避免起止落到同一分钟而无法编辑 */
@@ -52,6 +56,8 @@
       entries: stashed.concat(extra)
     });
     S.setRunning(null);
+    /* 结束时也推一次（内容为 null），让别的设备同步停下 */
+    A.sync.markRunning();
     return rec;
   }
 
@@ -567,6 +573,18 @@
         '<div class="t2" id="tl-live-t">' + U.hhmm(running.startTs) + '– 进行中</div></div>';
     }
 
+    /* 另一台设备正在进行的那一段 —— 只读展示，起点是那台设备推上来的 */
+    var rr = A.sync.remoteRunning ? A.sync.remoteRunning() : null;
+    if (rr && !liveRec && rr.date === day) {
+      var s3 = new Date(rr.startTs);
+      var top3 = (s3.getHours() * 60 + s3.getMinutes()) / 60 * PXH;
+      var m3 = U.minutesBetween(rr.startTs, Date.now());
+      html += '<div class="tl-block remote" id="tl-remote" style="top:' + top3 + 'px;height:' +
+        Math.max(26, m3 / 60 * PXH) + 'px;border-left-color:' + A.meta.subjColor(rr.categoryId) + '">' +
+        '<div class="t1">' + U.esc(rr.title || '（未命名）') + '</div>' +
+        '<div class="t2" id="tl-remote-t">' + U.hhmm(rr.startTs) + '– 另一台设备正在进行 · 已 ' + U.dur(m3) + '</div></div>';
+    }
+
     var nowMin = (new Date().getHours() * 60 + new Date().getMinutes());
     if (day === U.dateStr()) {
       html += '<div class="tl-now" style="top:' + (nowMin / 60 * PXH) + 'px"></div>';
@@ -631,17 +649,30 @@
   function startTicking() {
     if (tickTimer) clearInterval(tickTimer);
     tickTimer = setInterval(function () {
+      /* 本机正在进行的这一段 */
       var r = getRunning();
+      var mins = r ? U.minutesBetween(r.startTs, Date.now()) : 0;
       var el = document.getElementById('tl-live');
       var t = document.getElementById('tl-live-t');
-      if (!r || !el) return;
-      var mins = U.minutesBetween(r.startTs, Date.now());
-      var top = (new Date(r.startTs).getHours() * 60 + new Date(r.startTs).getMinutes()) / 60 * PXH;
-      el.style.top = top + 'px';
-      el.style.height = Math.max(26, mins / 60 * PXH) + 'px';
-      if (t) t.textContent = U.hhmm(r.startTs) + '– 进行中 · 已 ' + U.dur(mins);
+      if (r && el) {
+        var top = (new Date(r.startTs).getHours() * 60 + new Date(r.startTs).getMinutes()) / 60 * PXH;
+        el.style.top = top + 'px';
+        el.style.height = Math.max(26, mins / 60 * PXH) + 'px';
+        if (t) t.textContent = U.hhmm(r.startTs) + '– 进行中 · 已 ' + U.dur(mins);
+      }
+      /* 另一台设备正在进行的那一段，也让它自己往前走 */
+      var rel = document.getElementById('tl-remote');
+      if (rel) {
+        var rr = A.sync.remoteRunning ? A.sync.remoteRunning() : null;
+        var rt = document.getElementById('tl-remote-t');
+        if (rr && rr.startTs) {
+          var m2 = U.minutesBetween(rr.startTs, Date.now());
+          rel.style.height = Math.max(26, m2 / 60 * PXH) + 'px';
+          if (rt) rt.textContent = U.hhmm(rr.startTs) + '– 另一台设备正在进行 · 已 ' + U.dur(m2);
+        }
+      }
       var sub = document.getElementById('tb-sub');
-      if (sub) {
+      if (r && sub) {
         var total = S.records().filter(function (x) { return !x.deleted && x.date === r.date; })
           .reduce(function (s, x) { return s + (x.minutes || 0); }, 0) + mins;
         sub.textContent = U.dur(total);

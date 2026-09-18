@@ -111,6 +111,50 @@
   function monthOf(record) { return (record.date || '').slice(0, 7) || U.monthStr(); }
   function recordsFilePath(month) { return 'records/' + month + '.json'; }
 
+  /* ================= 设备标识 + 进行中时段 =================
+     计时本身完全在本地跑；这里只把"正在进行的那一段"的起点推上去，
+     别的设备拿到起点后自己接着算，不需要持续上传。
+     合并原则：本机的计时永远以本机为准；云端那份只用于在别的设备上显示（只读），
+     绝不把云端的 running 直接搬成本机的 running —— 否则两台设备会互相把对方的计时清掉。 */
+  var RUNNING_FILE = 'running.json';
+  var DEV = '';
+
+  function deviceId() {
+    if (DEV) return DEV;
+    try {
+      var m = S.meta();
+      if (!m.deviceId) { m.deviceId = U.uid(); S.saveMeta(m); }
+      DEV = m.deviceId;
+    } catch (e) { DEV = DEV || 'dev-unknown'; }
+    return DEV;
+  }
+
+  /* 本机 running → 上传用的载荷（结束计时时 running 为 null，用来让别的设备也停下） */
+  function localRunningPayload() {
+    var r = S.running();
+    var out = (r && r.startTs) ? {
+      startTs: r.startTs,
+      date: r.date || U.dateStr(),
+      title: r.title || '',
+      taskId: r.taskId || null,
+      categoryId: r.categoryId || null,
+      tagIds: r.tagIds || [],
+      deviceId: deviceId()
+    } : null;
+    return { running: out, deviceId: deviceId(), updatedAt: new Date().toISOString() };
+  }
+
+  /* 开始 / 结束计时时调用：把"进行中时段"标为待上传 */
+  function markRunning() { markDirty('running', 'running'); }
+
+  /* 云端那份"进行中时段"，且不是本机推的 —— 用来在别的设备上显示 */
+  function remoteRunning() {
+    var r = S.meta().remoteRunning;
+    if (!r || !r.startTs) return null;
+    if (r.deviceId && r.deviceId === deviceId()) return null;
+    return r;
+  }
+
   /* 记录最近一次同步结果，供设置页显示与排查 */
   function noteResult(ok, msg) {
     try {
@@ -138,6 +182,20 @@
       try { remote = (f ? JSON.parse(f.text) : {}).tasks || []; } catch (e) { remote = []; }
       S.saveTasks(A.gh.mergeTasks(S.tasks(), remote));
       summary.tasks = true;
+      return A.gh.readFile(RUNNING_FILE);
+    }).then(function (f) {
+      var data = null;
+      try { data = f ? JSON.parse(f.text) : null; } catch (e) { data = null; }
+      var prev = S.meta().remoteRunning;
+      var next = (data && data.running && data.running.startTs) ? data.running : null;
+      var changed = String((prev && prev.startTs) || '') !== String((next && next.startTs) || '') ||
+        String((prev && prev.deviceId) || '') !== String((next && next.deviceId) || '');
+      var mm0 = S.meta();
+      mm0.remoteRunning = next;
+      mm0.remoteRunningAt = (data && data.updatedAt) || '';
+      S.saveMeta(mm0);
+      summary.running = true;
+      summary.runningChanged = changed;
       return A.gh.listDir('records');
     }).then(function (list) {
       var months = [];
@@ -225,6 +283,15 @@
           .then(function () { clearDirty('month', [mo]); });
       });
     });
+    /* 进行中时段：只推"起点"，别的设备拿到后自己接着算 */
+    if (dirtyOf('running').length) {
+      chain = chain.then(function () {
+        var payload = localRunningPayload();
+        return putWithRetry(RUNNING_FILE, JSON.stringify(payload, null, 2),
+          'running: ' + (payload.running ? payload.running.title : 'idle'))
+          .then(function () { clearDirty('running', ['running']); });
+      });
+    }
     return chain.then(pushPendingImages).then(function () {
       setStatus('ok');
       noteResult(true, '');
@@ -274,13 +341,41 @@
   }
 
   /* ================= 对外接口 ================= */
-  var autoTimer = null;
+  /* 自动同步：节流 + 串行。
+     - 两次同步之间至少隔 MIN_GAP，短时间内的多次触发会被合并成一次
+     - 同步进行中再来的请求，只排一次队，不并发 */
+  var MIN_GAP = 8000;
+  var autoTimer = null, syncing = false, pendingAgain = false, lastAt = 0;
+
+  function refreshTimeline() {
+    try {
+      if (A.state && A.state.view === 'timeline' && A.views && A.views.timeline) A.views.timeline.render();
+    } catch (e) { /* 刷新失败不影响同步 */ }
+  }
+
+  function runNow() {
+    if (syncing) { pendingAgain = true; return Promise.resolve({ queued: true }); }
+    syncing = true;
+    lastAt = Date.now();
+    return fullSync().then(function (r) {
+      if (r && r.runningChanged) refreshTimeline();
+      return r;
+    }).catch(function (e) {
+      /* 静默：状态点已提示，设置页也能看到详情 */
+      return { error: (e && e.message) || String(e) };
+    }).then(function (r) {
+      syncing = false;
+      if (pendingAgain) { pendingAgain = false; return runNow(); }
+      return r;
+    });
+  }
+
   function scheduleAuto(delay) {
+    var d = (delay == null) ? 1500 : delay;
+    var since = Date.now() - lastAt;
+    if (since < MIN_GAP) d = Math.max(d, MIN_GAP - since);
     if (autoTimer) clearTimeout(autoTimer);
-    autoTimer = setTimeout(function () {
-      autoTimer = null;
-      pull().then(push).catch(function () { /* 静默：状态点已提示 */ });
-    }, delay == null ? 1500 : delay);
+    autoTimer = setTimeout(function () { autoTimer = null; runNow(); }, d);
   }
 
   function fullSync() {
@@ -291,6 +386,12 @@
     pull: pull, push: push, fullSync: fullSync,
     noteResult: noteResult,
     scheduleAuto: scheduleAuto,
+    runNow: runNow,
+    markRunning: markRunning,
+    remoteRunning: remoteRunning,
+    localRunningPayload: localRunningPayload,
+    deviceId: deviceId,
+    RUNNING_FILE: RUNNING_FILE,
     markDirty: markDirty,
     dirtyOf: dirtyOf,
     clearDirty: clearDirty,

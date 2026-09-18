@@ -56,6 +56,8 @@
         categoryId: task.categoryId || null,
         tagIds: task.tagIds || []
       });
+      A.sync.markRunning();
+      A.sync.scheduleAuto(300);
       A.go('timeline');
       UI.toast('已开始：' + task.title);
     }
@@ -99,6 +101,7 @@
             entries: A.views.timeline.takeLiveEntries(r.startTs)
           });
           S.setRunning(null);
+          A.sync.markRunning();
           var all = S.records(); all.push(rec);
           S.saveRecords(all);
           A.sync.markMonthOf(rec);

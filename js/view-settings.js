@@ -53,6 +53,15 @@
     if (q.length) {
       html += '<div class="hint" style="color:#854F0B">有 ' + q.length + ' 张图片还在等待上传，联网后会自动补传。</div>';
     }
+    var lrNow = A.sync.localRunningPayload ? A.sync.localRunningPayload().running : null;
+    var rrNow = A.sync.remoteRunning ? A.sync.remoteRunning() : null;
+    if (lrNow) {
+      html += '<div class="hint">本机正在计时：<b>' + U.esc(lrNow.title || '（未命名）') + '</b>（' +
+        U.hhmm(lrNow.startTs) + ' 开始）。点「立即同步」会把它一起推上去，别的设备就能看到。</div>';
+    } else if (rrNow) {
+      html += '<div class="hint">云端当前的进行中任务：<b>' + U.esc(rrNow.title || '（未命名）') + '</b>（' +
+        U.hhmm(rrNow.startTs) + ' 开始，来自另一台设备）</div>';
+    }
     html += '</div>';
 
     /* ---- 导出 ---- */
@@ -151,7 +160,7 @@
     return d;
   }
 
-  /* 同步诊断：把整条链路拆成 6 步，逐条给出 HTTP 状态与原文 */
+  /* 同步诊断：把整条链路拆成 7 步，逐条给出 HTTP 状态与原文 */
   function runDiag() {
     var cfg = S.syncCfg();
     var steps = [];
@@ -222,6 +231,25 @@
         }).catch(function (e) { add('6. 读写权限', false, '连不上：' + e.message); });
     }
 
+    function s7() {
+      if (!cfg.owner || !cfg.repo) { add('7. 进行中任务能不能同步', false, '跳过'); return Promise.resolve(); }
+      var path = A.sync.RUNNING_FILE || 'running.json';
+      return hit(base + '/repos/' + cfg.owner + '/' + cfg.repo + '/contents/' + path +
+        '?ref=' + encodeURIComponent(cfg.branch || 'main')).then(function (r) {
+          if (r.status === 404) {
+            add('7. 进行中任务能不能同步', true, '云端还没有 ' + path + '（第一次点「立即同步」时会自动建，正常）');
+            return;
+          }
+          if (!r.ok) { add('7. 进行中任务能不能同步', false, 'HTTP ' + r.status + '　' + msgOf(r)); return; }
+          var txt = '';
+          try { txt = decodeURIComponent(escape(atob(String(r.data.content || '').replace(/\s+/g, '')))); } catch (e) { txt = ''; }
+          var d = null; try { d = JSON.parse(txt); } catch (e) { d = null; }
+          add('7. 进行中任务能不能同步', true, (d && d.running)
+            ? '云端有一段时间正在进行：' + (d.running.title || '（未命名）') + '（' + U.hhmm(d.running.startTs) + ' 开始）'
+            : '文件在，当前没有正在进行的任务（正常）');
+        }).catch(function (e) { add('7. 进行中任务能不能同步', false, '连不上：' + e.message); });
+    }
+
     UI.sheet({
       title: '同步诊断',
       bodyHTML: '<div id="dg-out"><p class="hint" style="margin:8px 0">正在逐项检查…</p></div>',
@@ -239,7 +267,7 @@
           }).join('') + '<div class="hint" style="margin-top:12px">把这一段截图发我，我就能定位。</div>';
         }
         show();
-        s3().then(s4).then(s5).then(s6).then(show).catch(function (e) { add('诊断本身出错', false, e.message); show(); });
+        s3().then(s4).then(s5).then(s6).then(s7).then(show).catch(function (e) { add('诊断本身出错', false, e.message); show(); });
       }
     });
   }
@@ -308,6 +336,7 @@
           render();
           if (cfg.enabled) {
             UI.toast('同步已开启，正在试一次…');
+            A.sync.markRunning();   /* 把正在进行的任务一起推上去 */
             A.sync.fullSync().then(function () {
               UI.toast('首次同步成功', 3000); render();
             }).catch(function (err) {
@@ -334,13 +363,16 @@
           return;
         }
         if (el.id === 's-sync') {
+          if (!(cfg.owner && cfg.repo && cfg.token)) { UI.toast('先把账号、仓库和密钥都填上'); return; }
           S.saveSyncCfg(Object.assign({}, cfg, { enabled: true }));
-          UI.toast('正在同步…');
-          A.sync.fullSync().then(function (r) {
-            UI.toast('同步完成，本月处理 ' + ((r && r.months) || []).length + ' 个文件', 3000);
-            render();
-          }).catch(function (err) {
-            UI.toast('同步失败：' + err.message + '（可点「诊断」看卡在哪一步）', 9000);
+          A.sync.markRunning();   /* 连带把"正在进行的任务"一起推上去 */
+          UI.toast('正在同步（含正在进行的任务）…');
+          A.sync.runNow().then(function (r) {
+            if (r && r.error) {
+              UI.toast('同步失败：' + r.error + '（可点「诊断」看卡在哪一步）', 9000);
+            } else {
+              UI.toast('同步完成，本月处理 ' + ((r && r.months) || []).length + ' 个文件', 3000);
+            }
             render();
           });
           return;
