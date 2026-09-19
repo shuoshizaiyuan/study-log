@@ -134,6 +134,57 @@
     return res;
   }
 
+  /* ---------------- 正在进行的这一段：停止 / 取消 ---------------- */
+  /* 取消这一段：丢掉计时和已记录的内容，不产生任何记录 */
+  function discardRunning() {
+    var r = getRunning();
+    if (!isRunning(r)) return null;
+    var t = r.title || '';
+    var m = S.meta();
+    if (m.liveEntries && m.liveEntries[r.startTs]) delete m.liveEntries[r.startTs];
+    S.saveMeta(m);
+    S.setRunning(null);
+    A.sync.markRunning();          /* 推 null，别的设备也跟着停下 */
+    A.views.timeline.render();
+    UI.toast('已取消「' + (t || '这一段') + '」，没有留下记录', 3000);
+    return t;
+  }
+
+  function openRunningSheet() {
+    var r = getRunning();
+    if (!isRunning(r)) { A.views.timeline.render(); return; }
+    var mins = U.minutesBetween(r.startTs, Date.now());
+    var m = S.meta();
+    var stashed = (m.liveEntries && m.liveEntries[r.startTs]) ? m.liveEntries[r.startTs].length : 0;
+
+    UI.sheet({
+      title: '正在进行',
+      bodyHTML: '<p class="hint" style="margin:6px 0 10px;font-size:14px;color:var(--ink)">' +
+        '<b>' + U.esc(r.title || '（未命名）') + '</b><br>' + U.hhmm(r.startTs) + ' 开始，已经 ' + U.dur(mins) +
+        (stashed ? '<br>中途记了 ' + stashed + ' 条内容' : '') + '</p>' +
+        '<div class="hint">「结束并记录」会把这一段存成记录；「取消这一段」会把它整个丢掉，不留下任何记录。</div>' +
+        '<div style="margin-top:14px"><button class="btn ghost sm block" data-kill>取消这一段（不留下记录）</button></div>',
+      footHTML: '<button class="btn ghost" data-keep>继续计时</button>' +
+        '<button class="btn primary" data-fin>结束并记录</button>',
+      onMount: function (el, close) {
+        el.querySelector('[data-keep]').onclick = function () { close(); };
+        el.querySelector('[data-fin]').onclick = function () {
+          close();
+          var rec = settleAndSave();
+          if (rec) UI.toast('已记下 ' + U.dur(rec.minutes));
+          A.views.timeline.render();
+        };
+        el.querySelector('[data-kill]').onclick = function () {
+          close();
+          UI.confirm('取消这一段？这 ' + U.dur(mins) + ' 不会留下任何记录，也找不回来。', '取消这一段').then(function (ok) {
+            if (!ok) { openRunningSheet(); return; }
+            discardRunning();
+          });
+        };
+      }
+    });
+  }
+
   /* ---------------- 另一台设备正在进行的时段 ---------------- */
   /* 接手这一段：本机继续用同一个起点计时，并告诉那台设备停表。
      这样两边记的是同一段时间，不会各记一条、时间打架。 */
@@ -747,7 +798,8 @@
         (isLive ? '进行中' : U.hhmm(it.rec.endTs || it.e)) + '　' + U.dur(mins));
 
       if (it.kind === 'live') {
-        html += '<div class="tl-block running' + over + '" id="tl-live" title="' + fm + '" style="' + style + '">' +
+        /* 点这一块可以停止 / 取消这一段 */
+        html += '<div class="tl-block running' + over + '" id="tl-live" data-running="1" title="' + fm + '" style="' + style + '">' +
           '<div class="t1">' + U.esc(it.rec.title || '（未命名）') + '</div>' +
           '<div class="t2" id="tl-live-t">' + U.hhmm(it.s) + '– 进行中</div></div>';
         return;
@@ -779,9 +831,12 @@
     }
     html += '</div></div>';
 
-    html += '<div class="actionbar">' +
-      '<button class="btn start" data-act="next">' + (liveRec ? '开始新任务' : '开始计时') + '</button>' +
+    /* 计时中多给一个「停止」，随时能停下来或取消，不用绕到别的地方 */
+    var hasRun = isRunning(running);
+    html += '<div class="actionbar' + (hasRun ? ' three' : '') + '">' +
+      '<button class="btn start" data-act="next">' + (hasRun ? '开始新任务' : '开始计时') + '</button>' +
       '<button class="btn note" data-act="note">记录一下</button>' +
+      (hasRun ? '<button class="btn stop" data-act="stop">停止</button>' : '') +
       '</div>';
 
     main.innerHTML = '<div class="view">' + html + '</div>';
@@ -870,9 +925,10 @@
 
   function bind(rootEl) {
     rootEl.addEventListener('click', function (e) {
-      var t = e.target.closest ? e.target.closest('[data-act],[data-rec],[data-day],[data-remote]') : null;
+      var t = e.target.closest ? e.target.closest('[data-act],[data-rec],[data-day],[data-remote],[data-running]') : null;
       if (!t) return;
       if (t.hasAttribute('data-remote')) { openRemoteSheet(); return; }
+      if (t.hasAttribute('data-running')) { openRunningSheet(); return; }
       if (t.hasAttribute('data-day')) {
         var d = new Date(A.state.tlDay + 'T00:00:00');
         d.setDate(d.getDate() + (+t.getAttribute('data-day')));
@@ -884,6 +940,7 @@
       var act = t.getAttribute('data-act');
       if (act === 'next') openNextSheet();
       if (act === 'note') openEntrySheet(null);
+      if (act === 'stop') openRunningSheet();
     });
   }
 
@@ -895,6 +952,8 @@
     openNextSheet: openNextSheet,
     openRemoteSheet: openRemoteSheet,
     adoptRemote: adoptRemote,
+    openRunningSheet: openRunningSheet,
+    discardRunning: discardRunning,
     /* 供 app.js 在结算时取用暂存的"进行中条目" */
     takeLiveEntries: function (startTs) {
       var m = S.meta();

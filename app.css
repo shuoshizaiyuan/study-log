@@ -121,9 +121,14 @@ textarea.input{min-height:88px;resize:vertical;line-height:1.65}
   padding:10px 16px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .actionbar .btn{height:52px;border-radius:14px;font-size:15px}
 .actionbar.single{grid-template-columns:1fr}
+.actionbar.three{grid-template-columns:1.05fr 1fr .85fr}
+.actionbar.three .btn{font-size:14px;padding:0 6px}
 .btn.start{background:var(--blue);border-color:var(--blue);color:#fff}
 .btn.start:active{background:var(--navy)}
 .btn.note{background:var(--card);border-color:var(--blue-m);color:var(--navy)}
+.btn.stop{background:var(--red-l);border-color:#EFC7C7;color:var(--red)}
+.btn.stop:active{background:#F7DCDC}
+.tl-block.running{cursor:pointer}
 
 .q-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px 16px}
 .q-cell{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:11px 12px;min-height:126px;
