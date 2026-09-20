@@ -1,5 +1,8 @@
 /* card.js — 把某一天画成一张「打卡长图」（纯 Canvas，无第三方库、无外链）
-   图内包含：当天时间轴 + 逐条记录 + 每条记录里分次写的内容（摘录 + 字数）+ 图片缩略图 */
+   图上依次是：① 总时长 + 分类占比饼图（含图例）
+              ② 时间轴（只画「设置里选中的分类」，没选中的留成空白条）
+              ③ 按分类分组：分类总时长 → 每个任务各多久 → 该任务下的分次记录（摘录 + 字数）+ 图片缩略图
+   只统计哪些分类由 设置 → 打卡长图里显示哪些分类 决定（settings.cardCats） */
 (function (root) {
   'use strict';
   var A = root.App = root.App || {};
@@ -104,6 +107,11 @@
     var recs = S.records().filter(function (r) { return !r.deleted && r.date === day; })
       .sort(function (a, b) { return (a.startTs || 0) - (b.startTs || 0); });
     if (!recs.length) return Promise.reject(new Error('这一天还没有记录'));
+    /* 筛过分类之后可能一条都不剩，这时给一句能照着改的提示 */
+    var selNow = S.settings().cardCats;
+    if (selNow !== null && !recs.some(function (r) { return selNow.indexOf(r.categoryId || '') >= 0; })) {
+      return Promise.reject(new Error('这一天在所选分类里还没有记录（设置 → 打卡长图里显示哪些分类）'));
+    }
 
     return collectImages(recs).then(function (imgMap) {
       /* ---- 先把图都解码出来 ---- */
@@ -120,11 +128,48 @@
   }
 
   function paint(day, recs) {
-    var totalMin = recs.reduce(function (s, r) { return s + (r.minutes || 0); }, 0);
-    var imgCount = 0;
+    /* ---- 只统计「设置 → 打卡长图里显示哪些分类」选中的那些；
+            没选中的分类在时间轴上留成一条极淡的空白，不计入饼图和总时长 ---- */
+    var sel = S.settings().cardCats;
+    function shown(r) { return sel === null ? true : sel.indexOf(r.categoryId || '') >= 0; }
+
+    /* 分类 → 任务 两级聚合（只算被选中的） */
+    var gmap = {}, order = [];
     recs.forEach(function (r) {
-      (r.entries || []).forEach(function (en) { imgCount += ((en.images || []).length ? (en.images || []).length : 0); });
+      if (!shown(r)) return;
+      var k = A.meta.catName(r.categoryId) || '未分类';
+      if (!gmap[k]) {
+        gmap[k] = { name: k, min: 0, segs: 0, imgs: 0, color: A.meta.recColor(r), tasks: {}, torder: [] };
+        order.push(k);
+      }
+      var g = gmap[k];
+      g.min += (r.minutes || 0); g.segs++;
+      var tk = r.title || '（未命名）';
+      if (!g.tasks[tk]) { g.tasks[tk] = { title: tk, min: 0, segs: 0, imgs: 0, recs: [] }; g.torder.push(tk); }
+      var tt = g.tasks[tk];
+      tt.min += (r.minutes || 0); tt.segs++;
+      tt.imgs += (r.entries || []).reduce(function (s, en) { return s + ((en.images || []).length || 0); }, 0);
+      tt.recs.push(r);
     });
+    var groups = order.map(function (k) { return gmap[k]; }).sort(function (a, b) { return b.min - a.min; });
+    groups.forEach(function (g) {
+      g.tasks = g.torder.map(function (x) { return g.tasks[x]; }).sort(function (a, b) { return b.min - a.min; });
+      delete g.torder;
+      g.imgs = g.tasks.reduce(function (s, x) { return s + x.imgs; }, 0);
+    });
+
+    var totalMin = groups.reduce(function (s, g) { return s + g.min; }, 0);
+    var segCount = groups.reduce(function (s, g) { return s + g.segs; }, 0);
+    var imgCount = groups.reduce(function (s, g) { return s + g.imgs; }, 0);
+    var allMin = recs.reduce(function (s, r) { return s + (r.minutes || 0); }, 0);
+
+    /* 饼图数据：最多 6 块，多出来的并成「其他」 */
+    var legend = groups.map(function (g) { return { name: g.name, min: g.min, color: g.color }; });
+    if (legend.length > 6) {
+      var restMin = legend.slice(6).reduce(function (s, x) { return s + x.min; }, 0);
+      legend = legend.slice(0, 6).concat([{ name: '其他 ' + (groups.length - 6) + ' 类', min: restMin, color: C.ink3 }]);
+    }
+    legend.forEach(function (p) { p.frac = totalMin > 0 ? p.min / totalMin : 0; });
 
     var scratch = document.createElement('canvas');
     scratch.width = W; scratch.height = 10;
@@ -145,19 +190,88 @@
       ctx.fillText('学习打卡 · ' + day + ' 周' + U.weekday(day), PAD, titleY);
     });
     y += 62;
-    var subY = y;
-    var sub = '共 ' + U.dur(totalMin) + '　·　' + recs.length + ' 段' + (imgCount ? '　·　' + imgCount + ' 张图' : '');
-    push(function (ctx) {
-      ctx.fillStyle = C.ink2; ctx.font = fnt(30);
-      ctx.textBaseline = 'top';
-      ctx.fillText(sub, PAD, subY);
-    });
-    y += 46;
+    if (sel !== null) {
+      var selY = y;
+      var selLine = '只统计：' + (groups.length
+        ? groups.map(function (g) { return g.name; }).join('、')
+        : '（一个分类都没选，可在设置里调整）');
+      push(function (ctx) {
+        ctx.fillStyle = C.ink3; ctx.font = fnt(25); ctx.textBaseline = 'top';
+        ctx.fillText(ellipsis(ctx, selLine, PW), PAD, selY);
+      });
+      y += 36;
+    }
+    y += 14;
     var lineY = y;
     push(function (ctx) {
       ctx.fillStyle = C.line; ctx.fillRect(PAD, lineY, PW, 2);
     });
-    y += 34;
+    y += 30;
+
+    /* ---------- 总时长 + 饼图 ---------- */
+    var PIE_R = 92;
+    var cardTop = y;
+    var pieCX = PAD + PW - PIE_R - 32;
+    var pieCY = cardTop + 36 + PIE_R;
+    var baseH = PIE_R * 2 + 76;
+    var lgPerRow = 3;
+    var lgCell = Math.floor((PW - 60) / lgPerRow);
+    var lgRows = legend.length ? Math.ceil(legend.length / lgPerRow) : 1;
+    var cardH = baseH + lgRows * 46 + 14;
+    var bigY = cardTop + 34;
+    var cntY = cardTop + 128;
+    var allY = cardTop + 170;
+
+    push(function (ctx) {
+      ctx.fillStyle = C.sunk; ctx.globalAlpha = 0.55;
+      rr(ctx, PAD, cardTop, PW, cardH, 18); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.textBaseline = 'top';
+      /* 总时长（大字） */
+      ctx.fillStyle = C.ink; ctx.font = fnt(72, true);
+      ctx.fillText(U.dur(totalMin), PAD + 32, bigY);
+      ctx.fillStyle = C.ink2; ctx.font = fnt(27);
+      ctx.fillText(segCount + ' 段' + (imgCount ? '　·　' + imgCount + ' 张图' : ''), PAD + 34, cntY);
+      if (sel !== null && allMin > totalMin) {
+        ctx.fillStyle = C.ink3; ctx.font = fnt(23);
+        ctx.fillText('全天共 ' + U.dur(allMin) + '，另有 ' + U.dur(allMin - totalMin) + ' 不在所选分类', PAD + 34, allY);
+      }
+      /* 饼图（甜甜圈） */
+      var a0 = -Math.PI / 2;
+      legend.forEach(function (p) {
+        if (p.frac <= 0) return;
+        var a1 = a0 + p.frac * Math.PI * 2;
+        ctx.beginPath(); ctx.moveTo(pieCX, pieCY);
+        ctx.arc(pieCX, pieCY, PIE_R, a0, a1); ctx.closePath();
+        ctx.fillStyle = p.color; ctx.fill();
+        ctx.strokeStyle = C.bg; ctx.lineWidth = 3; ctx.stroke();
+        a0 = a1;
+      });
+      if (!legend.length) {
+        ctx.beginPath(); ctx.arc(pieCX, pieCY, PIE_R, 0, Math.PI * 2);
+        ctx.fillStyle = C.line; ctx.fill();
+      }
+      ctx.beginPath(); ctx.arc(pieCX, pieCY, PIE_R * 0.58, 0, Math.PI * 2);
+      ctx.fillStyle = C.bg; ctx.fill();
+      ctx.fillStyle = C.ink3; ctx.font = fnt(22);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(legend.length + ' 类', pieCX, pieCY);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      /* 图例 */
+      var lgTop = cardTop + baseH + 8;
+      legend.forEach(function (p, i) {
+        var cx = PAD + 30 + (i % lgPerRow) * lgCell;
+        var cy = lgTop + Math.floor(i / lgPerRow) * 46;
+        ctx.fillStyle = p.color;
+        rr(ctx, cx, cy + 8, 18, 18, 5); ctx.fill();
+        ctx.fillStyle = C.ink2; ctx.font = fnt(24);
+        ctx.fillText(ellipsis(ctx, p.name, lgCell - 178), cx + 28, cy + 7);
+        ctx.fillStyle = C.ink3; ctx.font = fnt(23);
+        var rt = U.dur(p.min) + '  ' + Math.round(p.frac * 100) + '%';
+        ctx.fillText(rt, cx + lgCell - 30 - ctx.measureText(rt).width, cy + 8);
+      });
+    });
+    y = cardTop + cardH + 42;
 
     /* ---------- 时间轴 ---------- */
     var tlTop = y;
@@ -178,9 +292,19 @@
 
     var items = recs.map(function (r) {
       var s = r.startTs || 0;
-      return { rec: r, s: s, e: (r.endTs && r.endTs > s) ? r.endTs : s + 60000 };
+      return { rec: r, s: s, e: (r.endTs && r.endTs > s) ? r.endTs : s + 60000, on: shown(r) };
     });
-    lanesOf(items).forEach(function (it) {
+    /* 没被选中的分类：只留一条极淡的空白条，让人知道「这里本来有别的」 */
+    items.filter(function (it) { return !it.on; }).forEach(function (it) {
+      var d0 = new Date(it.s);
+      var t0 = (d0.getHours() * 60 + d0.getMinutes()) / 60 * HOUR;
+      var h0 = Math.max(6, (it.rec.minutes || 0) / 60 * HOUR);
+      push(function (ctx) {
+        ctx.fillStyle = C.sunk;
+        rr(ctx, PAD + AXIS + 8, tlTop + t0, PW - AXIS - 16, h0, 5); ctx.fill();
+      });
+    });
+    lanesOf(items.filter(function (it) { return it.on; })).forEach(function (it) {
       var d = new Date(it.s);
       var top = (d.getHours() * 60 + d.getMinutes()) / 60 * HOUR;
       var hgt = Math.max(6, (it.rec.minutes || 0) / 60 * HOUR);
@@ -216,103 +340,118 @@
     }
     y = tlTop + tlH + 40;
 
-    /* ---------- 逐条记录 ---------- */
+    /* ---------- 这天做了什么（按分类分组：分类 → 任务 → 分次记录） ---------- */
     var secY = y;
     push(function (ctx) {
       ctx.fillStyle = C.ink3; ctx.font = fnt(26, true); ctx.textBaseline = 'top';
       ctx.fillText('这天做了什么', PAD, secY);
     });
-    y += 46;
+    y += 50;
 
-    recs.forEach(function (r, idx) {
-      var ens = (r.entries || []).slice().sort(function (a, b) { return (a.atTs || 0) - (b.atTs || 0); });
-      /* 先算这块有多高 */
-      var bodyLines = [];
-      var thumbs = [];
-      ens.slice(0, 3).forEach(function (en) {
-        var t = String(en.text || '').trim();
-        if (t) {
-          var ls = wrap(mc, t, PW - 34).slice(0, 2);
-          bodyLines.push({ at: en.at || '', lines: ls, n: zishu(t), more: wrap(mc, t, PW - 34).length > 2 });
-        } else if ((en.images || []).length) {
-          bodyLines.push({ at: en.at || '', lines: [], n: 0, more: false });
-        }
-        (en.images || []).forEach(function (im) {
-          if (thumbs.length < 3 && im.__img) thumbs.push(im.__img);
-        });
-      });
-      var hHead = 40 + 34 + 30;                                  /* 时间行 + 任务名 + 分类标签行 */
-      var hBody = bodyLines.reduce(function (s, b) { return s + 26 + b.lines.length * 34 + (b.lines.length ? 8 : 0); }, 0);
-      var hThumb = thumbs.length ? THUMB + 16 : 0;
-      var hMore = ens.length > 3 ? 30 : 0;
-      var hCard = hHead + hBody + hThumb + hMore + 26;
-
-      var top = y;
-      var color = A.meta.recColor(r);
-      var cat = [A.meta.catName(r.categoryId)].concat(A.meta.tagNames(r.tagIds)).filter(Boolean).join(' · ') || '未分类';
-
+    if (!groups.length) {
+      var emptyY = y;
       push(function (ctx) {
-        ctx.fillStyle = C.sunk; ctx.globalAlpha = 0.55;
-        rr(ctx, PAD, top + 4, PW, hCard, 16); ctx.fill();
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = color;
-        rr(ctx, PAD, top + 4, 6, hCard, 3); ctx.fill();
-        ctx.textBaseline = 'top';
-        /* 序号 + 时间 + 时长 */
-        ctx.fillStyle = C.ink3; ctx.font = fnt(24);
-        ctx.fillText('#' + (idx + 1), PAD + 24, top + 22);
-        ctx.fillStyle = color; ctx.font = fnt(28, true);
-        ctx.fillText(r.start + '–' + r.end + '　' + U.dur(r.minutes), PAD + 80, top + 18);
-        /* 任务名 */
-        ctx.fillStyle = C.ink; ctx.font = fnt(36, true);
-        ctx.fillText(ellipsis(ctx, r.title || '（未命名）', PW - 48), PAD + 24, top + 58);
-        /* 分类标签 */
-        ctx.fillStyle = C.ink3; ctx.font = fnt(24);
-        ctx.fillText(ellipsis(ctx, cat, PW - 48), PAD + 24, top + 104);
+        ctx.fillStyle = C.ink3; ctx.font = fnt(26); ctx.textBaseline = 'top';
+        ctx.fillText(sel === null ? '这一天还没有记录' : '所选分类里这一天还没有记录（可在设置 → 打卡长图里调整）', PAD, emptyY);
       });
+      y += 46;
+    }
 
-      var yy = top + hHead;
-      bodyLines.forEach(function (b) {
-        push(function (ctx) {
-          ctx.textBaseline = 'top';
-          if (b.at) {
-            ctx.fillStyle = C.teal; ctx.font = fnt(23, true);
-            ctx.fillText(b.at, PAD + 24, yy);
+    groups.forEach(function (g) {
+      /* 分类标题行：分类名 …… 这一类总共多久 */
+      var gTop = y;
+      push(function (ctx) {
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = C.ink; ctx.font = fnt(32, true);
+        ctx.fillText(ellipsis(ctx, g.name, PW - 240), PAD, gTop);
+        ctx.fillStyle = g.color; ctx.font = fnt(30, true);
+        var gv = U.dur(g.min);
+        ctx.fillText(gv, PAD + PW - ctx.measureText(gv).width, gTop + 2);
+        ctx.fillStyle = C.line; ctx.fillRect(PAD, gTop + 46, PW, 1);
+      });
+      y = gTop + 62;
+
+      g.tasks.forEach(function (t2) {
+        /* 这个任务下面所有的分次记录，按时间排 */
+        var ens = [];
+        t2.recs.forEach(function (r) {
+          (r.entries || []).slice().sort(function (a, b) { return (a.atTs || 0) - (b.atTs || 0); })
+            .forEach(function (en) { ens.push(en); });
+        });
+        var bodyLines = [];
+        var thumbs = [];
+        ens.slice(0, 3).forEach(function (en) {
+          var s2 = String(en.text || '').trim();
+          if (s2) {
+            var ls = wrap(mc, s2, PW - 40);
+            bodyLines.push({ at: en.at || '', lines: ls.slice(0, 2), n: zishu(s2), more: ls.length > 2 });
+          } else if ((en.images || []).length) {
+            bodyLines.push({ at: en.at || '', lines: [], n: 0, more: false });
           }
-          if (b.n) {
-            ctx.fillStyle = C.ink3; ctx.font = fnt(22);
-            var label = b.n + ' 字';
-            ctx.fillText(label, PAD + PW - 24 - ctx.measureText(label).width, yy + 1);
-          }
-          ctx.fillStyle = C.ink2; ctx.font = fnt(26);
-          b.lines.forEach(function (ln, i) {
-            ctx.fillText(ln + (b.more && i === b.lines.length - 1 ? ' …' : ''), PAD + 24, yy + 30 + i * 34);
+          (en.images || []).forEach(function (im) {
+            if (thumbs.length < 3 && im.__img) thumbs.push(im.__img);
           });
         });
-        yy += 26 + b.lines.length * 34 + (b.lines.length ? 8 : 0);
-      });
-      if (ens.length > 3) {
-        push(function (ctx) {
-          ctx.fillStyle = C.ink3; ctx.font = fnt(23); ctx.textBaseline = 'top';
-          ctx.fillText('（这条还有 ' + (ens.length - 3) + ' 次记录，这里只放前 3 次）', PAD + 24, yy);
-        });
-        yy += 30;
-      }
-      thumbs.forEach(function (img, i) {
-        var x = PAD + 24 + i * (THUMB + 14);
-        var ty = yy + 8;
-        push(function (ctx) {
-          ctx.save();
-          rr(ctx, x, ty, THUMB, THUMB, 10); ctx.clip();
-          var sc = Math.max(THUMB / img.width, THUMB / img.height);
-          var dw = img.width * sc, dh = img.height * sc;
-          ctx.drawImage(img, x + (THUMB - dw) / 2, ty + (THUMB - dh) / 2, dw, dh);
-          ctx.restore();
-        });
-      });
-      if (thumbs.length) yy += THUMB + 16;
 
-      y = top + hCard + 16;
+        var top = y;
+        /* 只有一段就写起止时间，多段就写「N 段」 */
+        var meta = (t2.segs > 1) ? (t2.segs + ' 段') : (t2.recs[0].start + '–' + t2.recs[0].end);
+
+        push(function (ctx) {
+          ctx.textBaseline = 'top';
+          ctx.fillStyle = g.color;
+          rr(ctx, PAD + 8, top + 13, 5, 22, 2); ctx.fill();
+          ctx.fillStyle = C.ink; ctx.font = fnt(28, true);
+          ctx.fillText(ellipsis(ctx, t2.title, PW - 360), PAD + 26, top + 9);
+          var right = meta + '　' + U.dur(t2.min);
+          ctx.fillStyle = C.ink2; ctx.font = fnt(25);
+          ctx.fillText(right, PAD + PW - ctx.measureText(right).width, top + 12);
+        });
+
+        var yy = top + 46;
+        bodyLines.forEach(function (b) {
+          push(function (ctx) {
+            ctx.textBaseline = 'top';
+            if (b.at) {
+              ctx.fillStyle = C.teal; ctx.font = fnt(23, true);
+              ctx.fillText(b.at, PAD + 26, yy);
+            }
+            if (b.n) {
+              ctx.fillStyle = C.ink3; ctx.font = fnt(22);
+              var label = b.n + ' 字';
+              ctx.fillText(label, PAD + PW - 26 - ctx.measureText(label).width, yy + 1);
+            }
+            ctx.fillStyle = C.ink2; ctx.font = fnt(26);
+            b.lines.forEach(function (ln, i) {
+              ctx.fillText(ln + (b.more && i === b.lines.length - 1 ? ' …' : ''), PAD + 26, yy + 30 + i * 34);
+            });
+          });
+          yy += 26 + b.lines.length * 34 + (b.lines.length ? 8 : 0);
+        });
+        if (ens.length > 3) {
+          push(function (ctx) {
+            ctx.fillStyle = C.ink3; ctx.font = fnt(23); ctx.textBaseline = 'top';
+            ctx.fillText('（这个任务还有 ' + (ens.length - 3) + ' 次记录，这里只放前 3 次）', PAD + 26, yy);
+          });
+          yy += 30;
+        }
+        thumbs.forEach(function (img, i) {
+          var x = PAD + 26 + i * (THUMB + 14);
+          var ty = yy + 8;
+          push(function (ctx) {
+            ctx.save();
+            rr(ctx, x, ty, THUMB, THUMB, 10); ctx.clip();
+            var sc = Math.max(THUMB / img.width, THUMB / img.height);
+            var dw = img.width * sc, dh = img.height * sc;
+            ctx.drawImage(img, x + (THUMB - dw) / 2, ty + (THUMB - dh) / 2, dw, dh);
+            ctx.restore();
+          });
+        });
+        if (thumbs.length) yy += THUMB + 16;
+
+        y = yy + 14;
+      });
+      y += 16;
     });
 
     y += PAD - 30;

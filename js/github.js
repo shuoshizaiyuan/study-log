@@ -159,6 +159,9 @@
       categories: union(local.categories, remote.categories).filter(keep),
       tags: union(local.tags, remote.tags).filter(keep),
       presets: (newer.presets && newer.presets.length) ? newer.presets : [45, 60, 90],
+      /* 打卡显示哪些分类是「显示偏好」，不做并集（否则取消勾选会被另一台复活），取较新的那份。
+         null 是合法值（= 显示全部），所以只能判 undefined，不能用 truthy */
+      cardCats: (newer.cardCats === undefined) ? null : newer.cardCats,
       removed: removed,
       updatedAt: newer.updatedAt || ''
     };

@@ -126,6 +126,9 @@
     ],
     tags: [],
     presets: [45, 60, 90],
+    /* 打卡长图只显示哪些分类：null = 全部（默认）；数组 = 白名单（可以是空数组）
+       注意：只有「用户主动改过」才会变成数组，所以不能用 length 判断 */
+    cardCats: null,
     removed: { categories: {}, tags: {} },
     updatedAt: ''
   };
@@ -148,6 +151,7 @@
       s.categories = s.categories || [];
       s.tags = s.tags || [];
       s.presets = (s.presets && s.presets.length) ? s.presets : [45, 60, 90];
+      if (s.cardCats !== null && !Array.isArray(s.cardCats)) s.cardCats = null;
       return ensureRemoved(s);
     },
     saveSettings: function (s) {

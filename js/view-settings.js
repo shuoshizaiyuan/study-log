@@ -12,6 +12,26 @@
     return (n / 1024 / 1024).toFixed(1) + ' MB';
   }
 
+  /* ---------------- 打卡长图显示哪些分类 ----------------
+     cardCats === null  → 全部显示（默认）
+     cardCats 是数组    → 白名单（可以是空数组，表示一个都不显示） */
+  function cardCatOn(sel, id) { return sel === null ? true : sel.indexOf(id) >= 0; }
+  function cardCatDesc(s, sel) {
+    if (sel === null) return '全部 ' + s.categories.length + ' 个分类都显示';
+    var names = s.categories.filter(function (c) { return sel.indexOf(c.id) >= 0; })
+      .map(function (c) { return c.name; });
+    if (!names.length) return '一个都没选 —— 打卡图会是空的';
+    return '只显示 ' + names.length + ' 个：' + names.join('、');
+  }
+  function saveCardCats(next) {
+    var s2 = S.settings();
+    s2.cardCats = next;
+    S.saveSettings(s2);
+    A.sync.markDirty('settings', 'settings');
+    A.sync.scheduleAuto(1000);
+    render();
+  }
+
   function render() {
     var main = document.getElementById('main');
     var s = S.settings();
@@ -126,6 +146,24 @@
       return '<span class="chip mini on">' + m + ' 分钟<span class="x" data-delpreset="' + i + '">×</span></span>';
     }).join('') + '</div>';
     html += '<div style="margin-top:12px"><button class="btn sm" id="s-addpreset">+ 加一个</button></div></div>';
+
+    /* ---- 打卡长图显示哪些分类 ---- */
+    var cc = s.cardCats;
+    html += '<div class="sec-title">打卡长图里显示哪些分类</div>';
+    html += '<div class="card tight">';
+    html += '<div class="hint" style="margin:0 0 10px">没选的分类，在打卡图上就是空白（时间轴刻度还在），也不计入总时长和饼图。</div>';
+    if (!s.categories.length) {
+      html += '<div class="hint" style="margin:0">还没有分类，先到上面建几个。</div>';
+    } else {
+      html += '<div class="row wrap">' + s.categories.map(function (c) {
+        return '<button class="chip' + (cardCatOn(cc, c.id) ? ' on' : '') + '" id="cc-' + c.id + '">' + U.esc(c.name) + '</button>';
+      }).join('') + '</div>';
+      html += '<div class="row wrap" style="margin-top:12px;gap:8px">' +
+        '<button class="btn sm' + (cc === null ? ' primary' : '') + '" id="cc-all">全部显示</button>' +
+        '<button class="btn sm' + ((cc !== null && cc.length === 0) ? ' primary' : '') + '" id="cc-none">一个都不显示</button></div>';
+      html += '<div class="hint" style="margin:10px 0 0">当前：' + U.esc(cardCatDesc(s, cc)) + '</div>';
+    }
+    html += '</div>';
 
     /* ---- 数据管理 ---- */
     html += '<div class="sec-title">数据管理</div>';
@@ -408,6 +446,21 @@
         return;
       }
       if (t && t.hasAttribute('data-ex')) { doExport(t.getAttribute('data-ex')); return; }
+
+      /* 打卡长图显示哪些分类 */
+      if (el.id && el.id.indexOf('cc-') === 0) {
+        var cur = S.settings().cardCats;
+        var allIds = S.settings().categories.map(function (c) { return c.id; });
+        if (el.id === 'cc-all') { saveCardCats(null); return; }
+        if (el.id === 'cc-none') { saveCardCats([]); return; }
+        var cid = el.id.slice(3);
+        var list = (cur === null) ? allIds.slice() : cur.slice();
+        var at = list.indexOf(cid);
+        if (at >= 0) list.splice(at, 1); else list.push(cid);
+        /* 又全都勾上了就回到「全部」，免得留一个没意义的长名单 */
+        saveCardCats(list.length === allIds.length ? null : list);
+        return;
+      }
 
       /* 分类 */
       if (el.id === 's-addcat') {
