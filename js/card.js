@@ -13,13 +13,41 @@
   var PW = W - PAD * 2;         /* 内容宽 */
   var HOUR = 34;                /* 时间轴每小时像素高 */
   var AXIS = 76;                /* 时间轴左侧刻度宽 */
-  var THUMB = 150;              /* 缩略图边长 */
+  var THUMB = 96;               /* 缩略图边长（小一点，图上不占地方） */
   var C = {
     bg: '#FFFFFF', ink: '#1B2130', ink2: '#5C6678', ink3: '#8D96A6',
     line: '#E6EAF1', sunk: '#EEF2F7', blue: '#185FA5', blueL: '#E6F1FB', teal: '#0F6E56'
   };
+  /* 字体栈写宽一点：安卓常见的是 Noto Sans CJK，苹果是 PingFang，
+     原来只写 PingFang + 雅黑，有些机型会落到一个缺字很多的默认字体上 → 画出来是方块/乱码 */
+  var FONT_STACK = 'system-ui,-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",' +
+    '"Noto Sans CJK SC","Source Han Sans SC","WenQuanYi Micro Hei",sans-serif';
   function fnt(sz, bold) {
-    return (bold ? '600 ' : '400 ') + sz + 'px -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif';
+    return (bold ? '600 ' : '400 ') + sz + 'px ' + FONT_STACK;
+  }
+  /* 画之前先把文字洗干净 —— 这是「图上出现乱码」最常见的原因：
+     从别处粘进来的控制字符 / 零宽字符 / BOM / 方向控制符 / 行分隔符，
+     字体里没有这些字形，画出来就是一个奇怪的方块。 */
+  function clean(s) {
+    s = String(s == null ? '' : s);
+    s = s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
+    s = s.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF\u00AD]/g, '');
+    s = s.replace(/[\u2028\u2029]/g, ' ');
+    s = s.replace(/[\u00A0\u3000\t\r\n]+/g, ' ');
+    return s.replace(/ {2,}/g, ' ').trim();
+  }
+  /* 按「码点」拆字，别用 charAt/slice —— emoji、生僻字是代理对，
+     从中间切开就会拼出半个字符，渲染出来正是乱码 */
+  function chars(s) {
+    s = String(s == null ? '' : s);
+    if (typeof Array.from === 'function') return Array.from(s);
+    var out = [], i = 0;
+    while (i < s.length) {
+      var c = s.charCodeAt(i);
+      if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) { out.push(s.substr(i, 2)); i += 2; }
+      else { out.push(s.charAt(i)); i += 1; }
+    }
+    return out;
   }
   function rr(ctx, x, y, w, h, r) {
     r = Math.min(r, w / 2, h / 2);
@@ -32,25 +60,28 @@
     ctx.closePath();
   }
   function ellipsis(ctx, s, maxW) {
-    s = String(s == null ? '' : s);
+    s = clean(s);
     if (ctx.measureText(s).width <= maxW) return s;
-    var out = s;
-    while (out.length > 1 && ctx.measureText(out + '…').width > maxW) out = out.slice(0, -1);
+    var arr = chars(s), out = '';
+    for (var i = 0; i < arr.length; i++) {
+      if (ctx.measureText(out + arr[i] + '…').width > maxW) break;
+      out += arr[i];
+    }
     return out + '…';
   }
   function wrap(ctx, s, maxW) {
-    s = String(s == null ? '' : s);
+    s = clean(s);
+    var arr = chars(s);
     var lines = [], line = '';
-    for (var i = 0; i < s.length; i++) {
-      var ch = s.charAt(i);
-      if (ch === '\n') { lines.push(line); line = ''; continue; }
+    for (var i = 0; i < arr.length; i++) {
+      var ch = arr[i];
       if (line && ctx.measureText(line + ch).width > maxW) { lines.push(line); line = ch; }
       else line += ch;
     }
     if (line) lines.push(line);
     return lines;
   }
-  function zishu(s) { return String(s == null ? '' : s).replace(/\s+/g, '').length; }
+  function zishu(s) { return chars(clean(s).replace(/ /g, '')).length; }
 
   /* 时间轴上把重叠的段分开画 */
   function lanesOf(items) {
@@ -163,19 +194,40 @@
     var imgCount = groups.reduce(function (s, g) { return s + g.imgs; }, 0);
     var allMin = recs.reduce(function (s, r) { return s + (r.minutes || 0); }, 0);
 
-    /* 饼图数据：最多 6 块，多出来的并成「其他」 */
-    var legend = groups.map(function (g) { return { name: g.name, min: g.min, color: g.color }; });
-    if (legend.length > 6) {
-      var restMin = legend.slice(6).reduce(function (s, x) { return s + x.min; }, 0);
-      legend = legend.slice(0, 6).concat([{ name: '其他 ' + (groups.length - 6) + ' 类', min: restMin, color: C.ink3 }]);
+    /* 饼图按「项目（任务）」分块，不是按分类。
+       每块会拉一条小引线出来，标上 任务名 / 科目 / 时长 / 占比。
+       项目太多就取前 6 个，其余并成「其他」。 */
+    var proj = [];
+    groups.forEach(function (g) {
+      g.tasks.forEach(function (t2) {
+        var hit = null;
+        for (var i = 0; i < proj.length; i++) if (proj[i].title === t2.title) { hit = proj[i]; break; }
+        if (hit) { hit.min += t2.min; hit.segs += t2.segs; }
+        else proj.push({ title: t2.title, cat: g.name, min: t2.min, segs: t2.segs });
+      });
+    });
+    proj.sort(function (a, b) { return b.min - a.min; });
+
+    var MAXP = 6;
+    var slices = proj.slice(0, MAXP).map(function (x) {
+      return { title: x.title, cat: x.cat, min: x.min, segs: x.segs };
+    });
+    if (proj.length > MAXP) {
+      var restMin = proj.slice(MAXP).reduce(function (s, x) { return s + x.min; }, 0);
+      slices = slices.concat([{ title: '其他 ' + (proj.length - MAXP) + ' 项', cat: '', min: restMin, segs: 0 }]);
     }
-    legend.forEach(function (p) { p.frac = totalMin > 0 ? p.min / totalMin : 0; });
+    /* 相邻块要能分清：按顺序取调色板的色，同一分类的几个项目才不会连成一片同色 */
+    var PALETTE = ['#185FA5', '#0F6E56', '#993C1D', '#534AB7', '#854F0B', '#A32D2D', '#2F6F9F', '#6B7A8F'];
+    slices.forEach(function (p, i) {
+      p.color = PALETTE[i % PALETTE.length];
+      p.frac = totalMin > 0 ? p.min / totalMin : 0;
+    });
 
     var scratch = document.createElement('canvas');
     scratch.width = W; scratch.height = 10;
     var mc = scratch.getContext('2d');
-    /* 量文字用的上下文必须和正文同一个字号，否则换行位置会算错 */
-    mc.font = fnt(26);
+    /* 量文字用的上下文必须和正文同一个字号，否则换行位置会算错（明细摘录是 22px） */
+    mc.font = fnt(22);
 
     var ops = [];
     var y = 0;
@@ -208,67 +260,108 @@
     });
     y += 30;
 
-    /* ---------- 总时长 + 饼图 ---------- */
-    var PIE_R = 92;
+    /* ---------- 总时长 + 按项目的饼图（每块拉一条引线标注） ---------- */
+    var PIE_R = 132;
     var cardTop = y;
-    var pieCX = PAD + PW - PIE_R - 32;
-    var pieCY = cardTop + 36 + PIE_R;
-    var baseH = PIE_R * 2 + 76;
-    var lgPerRow = 3;
-    var lgCell = Math.floor((PW - 60) / lgPerRow);
-    var lgRows = legend.length ? Math.ceil(legend.length / lgPerRow) : 1;
-    var cardH = baseH + lgRows * 46 + 14;
-    var bigY = cardTop + 34;
-    var cntY = cardTop + 128;
-    var allY = cardTop + 170;
+    var cardPad = 26;
+    var hasNote = (sel !== null && allMin > totalMin);
+    var textH = hasNote ? 140 : 104;
+    var cardH = cardPad + textH + 60 + PIE_R * 2 + cardPad;
+    var pieCX = PAD + PW / 2;
+    var pieCY = cardTop + cardPad + textH + 30 + PIE_R;
+    var bigY = cardTop + cardPad;
+    var cntY = cardTop + cardPad + 54;
+    var allY = cardTop + cardPad + textH - 30;
+    var TEXTW = Math.floor(PW / 2) - PIE_R - 76;
 
     push(function (ctx) {
       ctx.fillStyle = C.sunk; ctx.globalAlpha = 0.55;
       rr(ctx, PAD, cardTop, PW, cardH, 18); ctx.fill();
       ctx.globalAlpha = 1;
       ctx.textBaseline = 'top';
-      /* 总时长（大字） */
+      /* 总时长（大字）+ 段数 / 图数 */
       ctx.fillStyle = C.ink; ctx.font = fnt(72, true);
-      ctx.fillText(U.dur(totalMin), PAD + 32, bigY);
-      ctx.fillStyle = C.ink2; ctx.font = fnt(27);
-      ctx.fillText(segCount + ' 段' + (imgCount ? '　·　' + imgCount + ' 张图' : ''), PAD + 34, cntY);
-      if (sel !== null && allMin > totalMin) {
-        ctx.fillStyle = C.ink3; ctx.font = fnt(23);
+      var big = U.dur(totalMin);
+      ctx.fillText(big, PAD + 32, bigY);
+      var w0 = ctx.measureText(big).width;
+      ctx.fillStyle = C.ink2; ctx.font = fnt(26);
+      ctx.fillText(segCount + ' 段' + (imgCount ? '　·　' + imgCount + ' 张图' : ''), PAD + 44 + w0, cntY + 14);
+      if (hasNote) {
+        ctx.fillStyle = C.ink3; ctx.font = fnt(22);
         ctx.fillText('全天共 ' + U.dur(allMin) + '，另有 ' + U.dur(allMin - totalMin) + ' 不在所选分类', PAD + 34, allY);
       }
-      /* 饼图（甜甜圈） */
+
+      /* 饼图本体 + 记录每块的引线落点 */
       var a0 = -Math.PI / 2;
-      legend.forEach(function (p) {
+      var laid = [];
+      slices.forEach(function (p) {
         if (p.frac <= 0) return;
         var a1 = a0 + p.frac * Math.PI * 2;
         ctx.beginPath(); ctx.moveTo(pieCX, pieCY);
         ctx.arc(pieCX, pieCY, PIE_R, a0, a1); ctx.closePath();
         ctx.fillStyle = p.color; ctx.fill();
         ctx.strokeStyle = C.bg; ctx.lineWidth = 3; ctx.stroke();
+        var mid = (a0 + a1) / 2;
+        laid.push({
+          p: p, mid: mid,
+          side: Math.cos(mid) >= 0 ? 1 : -1,
+          ly: pieCY + Math.sin(mid) * (PIE_R + 36)
+        });
         a0 = a1;
       });
-      if (!legend.length) {
+      if (!slices.length) {
         ctx.beginPath(); ctx.arc(pieCX, pieCY, PIE_R, 0, Math.PI * 2);
         ctx.fillStyle = C.line; ctx.fill();
       }
-      ctx.beginPath(); ctx.arc(pieCX, pieCY, PIE_R * 0.58, 0, Math.PI * 2);
+      /* 中间挖空：写「N 项 / 共 X」 */
+      ctx.beginPath(); ctx.arc(pieCX, pieCY, PIE_R * 0.54, 0, Math.PI * 2);
       ctx.fillStyle = C.bg; ctx.fill();
-      ctx.fillStyle = C.ink3; ctx.font = fnt(22);
+      ctx.fillStyle = C.ink3; ctx.font = fnt(24);
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(legend.length + ' 类', pieCX, pieCY);
+      ctx.fillText(proj.length + ' 项', pieCX, pieCY - 13);
+      ctx.font = fnt(21);
+      ctx.fillText('共 ' + U.dur(totalMin), pieCX, pieCY + 17);
       ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      /* 图例 */
-      var lgTop = cardTop + baseH + 8;
-      legend.forEach(function (p, i) {
-        var cx = PAD + 30 + (i % lgPerRow) * lgCell;
-        var cy = lgTop + Math.floor(i / lgPerRow) * 46;
-        ctx.fillStyle = p.color;
-        rr(ctx, cx, cy + 8, 18, 18, 5); ctx.fill();
-        ctx.fillStyle = C.ink2; ctx.font = fnt(24);
-        ctx.fillText(ellipsis(ctx, p.name, lgCell - 178), cx + 28, cy + 7);
-        ctx.fillStyle = C.ink3; ctx.font = fnt(23);
-        var rt = U.dur(p.min) + '  ' + Math.round(p.frac * 100) + '%';
-        ctx.fillText(rt, cx + lgCell - 30 - ctx.measureText(rt).width, cy + 8);
+
+      /* 同一侧的标注不能叠在一起：按 y 排好后强行拉开最小间距，再整体夹回卡片里 */
+      var topLimit = cardTop + cardPad + textH + 34;
+      var botLimit = cardTop + cardH - cardPad - 26;
+      [1, -1].forEach(function (sd) {
+        var list = laid.filter(function (x) { return x.side === sd; })
+          .sort(function (p, q) { return p.ly - q.ly; });
+        var GAP = 54;
+        for (var i = 1; i < list.length; i++) {
+          if (list[i].ly - list[i - 1].ly < GAP) list[i].ly = list[i - 1].ly + GAP;
+        }
+        if (list.length) {
+          var over = list[list.length - 1].ly - botLimit;
+          if (over > 0) for (var j = list.length - 1; j >= 0; j--) list[j].ly -= over;
+          if (list[0].ly < topLimit) {
+            var up = topLimit - list[0].ly;
+            for (var k = 0; k < list.length; k++) list[k].ly += up;
+          }
+        }
+      });
+
+      /* 引线 + 两行标注：任务名 / 科目 · 时长 · 占比 */
+      laid.forEach(function (x) {
+        var p = x.p, sd = x.side;
+        var ax = pieCX + Math.cos(x.mid) * PIE_R;
+        var ay = pieCY + Math.sin(x.mid) * PIE_R;
+        var bx = pieCX + sd * (PIE_R + 22);
+        var tx = pieCX + sd * (PIE_R + 42);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, x.ly);
+        ctx.lineTo(tx, x.ly);
+        ctx.strokeStyle = p.color; ctx.lineWidth = 1.6; ctx.stroke();
+        ctx.textAlign = sd > 0 ? 'left' : 'right';
+        ctx.fillStyle = C.ink; ctx.font = fnt(23, true);
+        ctx.fillText(ellipsis(ctx, p.title, TEXTW), tx + sd * 8, x.ly - 28);
+        var sub = (p.cat ? p.cat + ' · ' : '') + U.dur(p.min) + ' · ' + Math.round(p.frac * 100) + '%';
+        ctx.fillStyle = C.ink3; ctx.font = fnt(21);
+        ctx.fillText(ellipsis(ctx, sub, TEXTW), tx + sd * 8, x.ly - 2);
+        ctx.textAlign = 'left';
       });
     });
     y = cardTop + cardH + 42;
@@ -381,12 +474,19 @@
         var bodyLines = [];
         var thumbs = [];
         ens.slice(0, 3).forEach(function (en) {
-          var s2 = String(en.text || '').trim();
+          var s2 = clean(en.text);
           if (s2) {
-            var ls = wrap(mc, s2, PW - 40);
-            bodyLines.push({ at: en.at || '', lines: ls.slice(0, 2), n: zishu(s2), more: ls.length > 2 });
+            /* 摘录别放太多字：长文先按字数砍一刀，再按宽度折行，最多两行
+               （字数照原文算，让人知道本来有多少） */
+            var CAP = 80;
+            var carr = chars(s2);
+            var cut = carr.length > CAP;
+            var shown = cut ? carr.slice(0, CAP).join('') : s2;
+            mc.font = fnt(22);                       /* 量宽度必须和真正画出来的字号一致 */
+            var ls = wrap(mc, shown, PW - 40);
+            bodyLines.push({ at: clean(en.at), lines: ls.slice(0, 2), n: zishu(s2), more: cut || ls.length > 2 });
           } else if ((en.images || []).length) {
-            bodyLines.push({ at: en.at || '', lines: [], n: 0, more: false });
+            bodyLines.push({ at: clean(en.at), lines: [], n: 0, more: false });
           }
           (en.images || []).forEach(function (im) {
             if (thumbs.length < 3 && im.__img) thumbs.push(im.__img);
@@ -413,30 +513,30 @@
           push(function (ctx) {
             ctx.textBaseline = 'top';
             if (b.at) {
-              ctx.fillStyle = C.teal; ctx.font = fnt(23, true);
+              ctx.fillStyle = C.teal; ctx.font = fnt(21, true);
               ctx.fillText(b.at, PAD + 26, yy);
             }
             if (b.n) {
-              ctx.fillStyle = C.ink3; ctx.font = fnt(22);
+              ctx.fillStyle = C.ink3; ctx.font = fnt(20);
               var label = b.n + ' 字';
               ctx.fillText(label, PAD + PW - 26 - ctx.measureText(label).width, yy + 1);
             }
-            ctx.fillStyle = C.ink2; ctx.font = fnt(26);
+            ctx.fillStyle = C.ink2; ctx.font = fnt(22);
             b.lines.forEach(function (ln, i) {
-              ctx.fillText(ln + (b.more && i === b.lines.length - 1 ? ' …' : ''), PAD + 26, yy + 30 + i * 34);
+              ctx.fillText(ln + (b.more && i === b.lines.length - 1 ? ' …' : ''), PAD + 26, yy + 26 + i * 28);
             });
           });
-          yy += 26 + b.lines.length * 34 + (b.lines.length ? 8 : 0);
+          yy += 24 + b.lines.length * 28 + (b.lines.length ? 6 : 0);
         });
         if (ens.length > 3) {
           push(function (ctx) {
-            ctx.fillStyle = C.ink3; ctx.font = fnt(23); ctx.textBaseline = 'top';
+            ctx.fillStyle = C.ink3; ctx.font = fnt(21); ctx.textBaseline = 'top';
             ctx.fillText('（这个任务还有 ' + (ens.length - 3) + ' 次记录，这里只放前 3 次）', PAD + 26, yy);
           });
-          yy += 30;
+          yy += 28;
         }
         thumbs.forEach(function (img, i) {
-          var x = PAD + 26 + i * (THUMB + 14);
+          var x = PAD + 26 + i * (THUMB + 12);
           var ty = yy + 8;
           push(function (ctx) {
             ctx.save();
@@ -447,7 +547,7 @@
             ctx.restore();
           });
         });
-        if (thumbs.length) yy += THUMB + 16;
+        if (thumbs.length) yy += THUMB + 12;
 
         y = yy + 14;
       });
