@@ -130,20 +130,36 @@
   function mergeSettings(local, remote) {
     if (!remote) return local;
     if (!local) return remote;
-    function union(a, b, prefix) {
+    function union(a, b) {
       var seen = {}, out = [];
       [].concat(b || [], a || []).forEach(function (x) {
         if (!x || !x.id || seen[x.id]) return;
         seen[x.id] = 1; out.push(x);
       });
-      void prefix;
       return out;
+    }
+    /* 合并「删除墓碑」：分类/标签的新增是并集，但删除必须能表达出来，
+       否则一台设备删掉的分类会被另一台的旧数据合并回来（删了过会儿又冒出来）。 */
+    var removed = { categories: {}, tags: {} };
+    [local.removed, remote.removed].forEach(function (m) {
+      if (!m) return;
+      ['categories', 'tags'].forEach(function (k) {
+        var o = m[k] || {};
+        Object.keys(o).forEach(function (id) {
+          var t = String(o[id] || '');
+          if (!removed[k][id] || t > removed[k][id]) removed[k][id] = t;
+        });
+      });
+    });
+    function keep(x) {
+      return !!x && !!x.id && !removed.categories[x.id] && !removed.tags[x.id];
     }
     var newer = String(local.updatedAt || '') > String(remote.updatedAt || '') ? local : remote;
     return {
-      categories: union(local.categories, remote.categories),
-      tags: union(local.tags, remote.tags),
+      categories: union(local.categories, remote.categories).filter(keep),
+      tags: union(local.tags, remote.tags).filter(keep),
       presets: (newer.presets && newer.presets.length) ? newer.presets : [45, 60, 90],
+      removed: removed,
       updatedAt: newer.updatedAt || ''
     };
   }

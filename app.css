@@ -68,6 +68,7 @@ button{cursor:pointer;border:none;background:none;padding:0}
 .btn.primary:active{background:var(--navy)}
 .btn.ghost{border-color:transparent;background:var(--sunk);color:var(--ink2)}
 .btn.sm{height:34px;font-size:13px;border-radius:9px;padding:0 11px}
+.btn.mid{height:40px;font-size:14px}
 .btn.block{display:flex;width:100%}
 .btn:disabled{opacity:.45}
 
@@ -92,6 +93,7 @@ textarea.input{min-height:88px;resize:vertical;line-height:1.65}
 
 .tl-datebar{display:flex;align-items:center;justify-content:space-between;gap:8px;
   padding:10px 0 8px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.tl-nav{display:flex;align-items:center;gap:8px}
 .tl-pane{position:relative;padding:8px 16px 0}
 .tl-scroller{position:relative}
 .tl-hour{position:absolute;left:0;right:0;height:1px;background:var(--line)}
@@ -158,6 +160,12 @@ textarea.input{min-height:88px;resize:vertical;line-height:1.65}
 .mq-item .mi-m{display:block;font-size:10.5px;font-weight:400;color:var(--ink3);margin-top:2px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mq-empty{font-size:11px;color:var(--ink3);text-align:center;margin:auto 0}
+/* 「已分类」里的分类行（比分类标签大一圈，常用） */
+.cat-item{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;
+  background:var(--card);border:1px solid var(--line);border-radius:11px;padding:12px 14px;
+  font-size:14.5px;font-weight:500;color:var(--ink);margin-bottom:8px;text-align:left}
+.cat-item:active{background:var(--blue-l);border-color:var(--blue-m);color:var(--navy)}
+.cat-item .ci-c{font-size:11.5px;font-weight:400;color:var(--ink3);font-variant-numeric:tabular-nums;white-space:nowrap}
 
 /* 提示块（例如时间段重叠） */
 .warn{margin-top:10px;background:var(--amber-l);border-radius:10px;padding:9px 11px;
@@ -174,7 +182,22 @@ textarea.input{min-height:88px;resize:vertical;line-height:1.65}
   font-size:12.5px;background:var(--card);border:1px solid var(--line);color:var(--ink2)}
 .cal .cd.has{background:var(--teal-l);border-color:var(--teal-m);color:var(--teal);font-weight:600}
 .cal .cd.today{border-color:var(--blue);border-width:2px}
+.cal .cd.sel{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
 .cal .cd.pad{background:transparent;border:none}
+
+/* 总览 · 当天：24 小时横条 */
+.daybar{position:relative;height:14px;border-radius:7px;background:var(--sunk);overflow:hidden;margin:4px 0 3px}
+.daybar .db{position:absolute;top:0;bottom:0;border-radius:3px}
+.daybar .dbtick{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.75)}
+.daylbl{display:flex;justify-content:space-between;font-size:10.5px;color:var(--ink3);
+  font-variant-numeric:tabular-nums}
+
+/* 总览 · 月：每天一根柱 */
+.mbars{display:flex;align-items:flex-end;gap:2px;height:82px}
+.mbars .mb{flex:1 1 0;height:100%;display:flex;align-items:flex-end;justify-content:center;cursor:pointer}
+.mbars .mb span{display:block;width:100%;max-width:15px;border-radius:3px;background:var(--line2)}
+.mbars .mb.has span{background:var(--teal-m)}
+.mbars .mb.sel span{background:var(--blue)}
 
 .list-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:13px 16px;background:var(--card);border-bottom:1px solid var(--line)}

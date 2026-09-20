@@ -10,6 +10,7 @@ var SHELL = [
   './js/github.js',
   './js/sync.js',
   './js/export.js',
+  './js/card.js',
   './js/view-timeline.js',
   './js/view-tasks.js',
   './js/view-dashboard.js',

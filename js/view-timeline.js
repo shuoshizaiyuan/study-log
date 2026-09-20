@@ -235,7 +235,6 @@
     tasks.sort(function (a, b) { return String(b.lastUsedAt || '').localeCompare(String(a.lastUsedAt || '')); });
     var settings = S.settings();
     var pickCat = null, pickTags = [];
-    var QUADL = (A.views.tasks && A.views.tasks.QUAD) || [];
 
     var html = '';
 
@@ -252,7 +251,8 @@
     html += '<div id="nt-panel-custom">';
     html += '<label class="label" style="margin-top:6px">任务名</label>';
     html += '<input class="input" id="nt-title" placeholder="要做什么？例如：背诵社会研究方法" autocomplete="off">';
-    html += '<button class="btn block" id="nt-tolist" style="margin-top:10px">任务清单' +
+    /* 常用入口：比下面的分类/标签小标签略大一圈 */
+    html += '<button class="btn mid block" id="nt-tolist" style="margin-top:10px">已分类' +
       (tasks.length ? '（' + tasks.length + ' 条）' : '') + '</button>';
     html += '<label class="label">分类（只能选一个）</label><div class="row wrap" id="nt-cats">' +
       settings.categories.map(function (c) {
@@ -264,24 +264,10 @@
       }).join('') + '<button class="chip" data-newtag>+ 新建标签</button></div>';
     html += '</div>';
 
-    /* —— 面板二：任务清单（简化四象限，点任务直接开始）—— */
+    /* —— 面板二：已分类（分类 → 该分类下的任务 → 点任务直接开始）—— */
     html += '<div id="nt-panel-list" style="display:none">';
     html += '<button class="btn sm ghost block" id="nt-tocustom">返回手动输入</button>';
-    if (tasks.length && QUADL.length) {
-      html += '<div class="mq-grid">' + QUADL.map(function (q) {
-        var its = tasks.filter(function (t) { return t.quadrant === q.id; });
-        return '<div class="mq"><div class="mq-h"><span>' + U.esc(q.name) + '</span><span>' + its.length + '</span></div>' +
-          '<div class="mq-b">' + (its.length ? its.slice(0, 30).map(function (t) {
-            var sub = [A.meta.catName(t.categoryId)].concat(A.meta.tagNames(t.tagIds)).filter(Boolean).join(' · ') || '未分类';
-            if (t.dueDate) sub += ' · 预期 ' + t.dueDate;
-            return '<button class="mq-item" data-pickstart="' + t.id + '">' + U.esc(t.title) +
-              '<span class="mi-m">' + U.esc(sub) + '</span></button>';
-          }).join('') : '<div class="mq-empty">空</div>') + '</div></div>';
-      }).join('') + '</div>';
-      html += '<div class="hint">点任务直接开始；上一段会自动结算，两段紧挨着。</div>';
-    } else {
-      html += '<div class="empty" style="padding:26px 8px">任务清单还是空的<br>先到「任务」页加几条，就能在这里点着开始了</div>';
-    }
+    html += '<div id="nt-cat-root"></div>';
     html += '</div>';
 
     html += '<div style="margin-top:14px"><button class="btn ghost sm block" data-stop>今天到这儿，先停下来</button></div>';
@@ -365,13 +351,68 @@
           if (r0) adoptRemote(r0);
         };
 
-        el.querySelectorAll('[data-pickstart]').forEach(function (b) {
-          b.onclick = function () {
-            var t = S.tasks().filter(function (x) { return x.id === b.dataset.pickstart; })[0];
-            if (!t) return;
-            doStart(t.title, t.categoryId, (t.tagIds || []).slice(), t.id);
-          };
-        });
+        /* ---- 「已分类」：先选分类，再看这一分类下的任务 ---- */
+        var catBox = el.querySelector('#nt-cat-root');
+
+        function bindPickStart(scope) {
+          scope.querySelectorAll('[data-pickstart]').forEach(function (b) {
+            b.onclick = function () {
+              var t = S.tasks().filter(function (x) { return x.id === b.dataset.pickstart; })[0];
+              if (!t) return;
+              doStart(t.title, t.categoryId, (t.tagIds || []).slice(), t.id);
+            };
+          });
+        }
+
+        function uncatOf(list, known) {
+          return list.filter(function (t) { return !t.categoryId || !known[t.categoryId]; });
+        }
+
+        function showCats() {
+          var s = S.settings();
+          var known = {};
+          s.categories.forEach(function (c) { known[c.id] = 1; });
+          var groups = s.categories.map(function (c) {
+            return { id: c.id, name: c.name, items: tasks.filter(function (t) { return t.categoryId === c.id; }) };
+          }).filter(function (g) { return g.items.length; });
+          var noCat = uncatOf(tasks, known);
+          if (noCat.length) groups.push({ id: '', name: '未分类', items: noCat });
+
+          if (!groups.length) {
+            catBox.innerHTML = '<div class="empty" style="padding:26px 8px">还没有任务<br>先到「任务」页加几条，就能在这里点着开始了</div>';
+            return;
+          }
+          catBox.innerHTML = '<div class="hint" style="margin:6px 0 10px">点一个分类，看里面有哪些任务</div>' +
+            groups.map(function (g) {
+              return '<button class="cat-item" data-catopen="' + U.esc(g.id) + '">' +
+                '<span class="ci-n">' + U.esc(g.name) + '</span>' +
+                '<span class="ci-c">' + g.items.length + ' 条　›</span></button>';
+            }).join('');
+          catBox.querySelectorAll('[data-catopen]').forEach(function (b) {
+            b.onclick = function () { showTasks(b.getAttribute('data-catopen')); };
+          });
+        }
+
+        function showTasks(catId) {
+          var s = S.settings();
+          var known = {};
+          s.categories.forEach(function (c) { known[c.id] = 1; });
+          var items = catId ? tasks.filter(function (t) { return t.categoryId === catId; }) : uncatOf(tasks, known);
+          var name = catId ? (A.meta.catName(catId) || '未分类') : '未分类';
+          catBox.innerHTML = '<button class="btn sm ghost block" data-catback>← 返回分类</button>' +
+            '<div class="hint" style="margin:10px 0 8px">' + U.esc(name) + '　' + items.length + ' 条　— 点任务直接开始</div>' +
+            (items.length ? items.map(function (t) {
+              var sub = A.meta.tagNames(t.tagIds).join(' · ') || '无标签';
+              if (t.presetMinutes) sub += ' · 预计 ' + t.presetMinutes + 'min';
+              if (t.dueDate) sub += ' · 预期 ' + t.dueDate;
+              return '<button class="mq-item" data-pickstart="' + t.id + '">' + U.esc(t.title) +
+                '<span class="mi-m">' + U.esc(sub) + '</span></button>';
+            }).join('') : '<div class="empty" style="padding:20px 8px">这个分类下还没有任务</div>');
+          catBox.querySelector('[data-catback]').onclick = showCats;
+          bindPickStart(catBox);
+        }
+
+        bindPickStart(el);
 
         /* 两个面板互切 */
         var panelC = el.querySelector('#nt-panel-custom');
@@ -380,6 +421,7 @@
         el.querySelector('#nt-tolist').onclick = function () {
           panelC.style.display = 'none'; panelL.style.display = '';
           if (goBtn) goBtn.style.display = 'none';
+          showCats();
         };
         el.querySelector('#nt-tocustom').onclick = function () {
           panelL.style.display = 'none'; panelC.style.display = '';
@@ -756,10 +798,13 @@
 
     var html = '';
     html += '<div class="tl-pane"><div class="tl-datebar">' +
+      '<span class="tl-nav">' +
       '<button class="btn sm ghost" data-day="-1">◀</button>' +
       '<span style="font-size:13px;color:var(--ink2)">' + U.esc(day) + ' 周' + U.weekday(day) +
       (day === U.dateStr() ? '（今天）' : '') + '</span>' +
-      '<button class="btn sm ghost" data-day="1">▶</button></div></div>';
+      '<button class="btn sm ghost" data-day="1">▶</button></span>' +
+      '<button class="btn sm" data-act="card">打卡</button>' +
+      '</div></div>';
 
     var H = 24 * PXH;
     html += '<div class="tl-pane"><div class="tl-scroller" id="tl-scroller" style="height:' + H + 'px">';
@@ -941,6 +986,20 @@
       if (act === 'next') openNextSheet();
       if (act === 'note') openEntrySheet(null);
       if (act === 'stop') openRunningSheet();
+      if (act === 'card') exportCard();
+    });
+  }
+
+  /* ---------------- 打卡：把当天画成一张长图 ---------------- */
+  function exportCard() {
+    var day = A.state.tlDay || U.dateStr();
+    var recs = S.records().filter(function (r) { return !r.deleted && r.date === day; });
+    if (!recs.length) { UI.toast(day === U.dateStr() ? '今天还没记录，先记一段再打卡' : day + ' 没有记录'); return; }
+    UI.toast('正在生成打卡图…', 5000);
+    A.card.exportDay(day).then(function (fn) {
+      UI.toast('打卡图已生成：' + fn + '（在手机的「下载」里）', 6000);
+    }).catch(function (e) {
+      UI.toast('打卡图生成失败：' + e.message, 6000);
     });
   }
 
@@ -954,6 +1013,7 @@
     adoptRemote: adoptRemote,
     openRunningSheet: openRunningSheet,
     discardRunning: discardRunning,
+    exportCard: exportCard,
     /* 供 app.js 在结算时取用暂存的"进行中条目" */
     takeLiveEntries: function (startTs) {
       var m = S.meta();

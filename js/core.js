@@ -126,18 +126,29 @@
     ],
     tags: [],
     presets: [45, 60, 90],
+    removed: { categories: {}, tags: {} },
     updatedAt: ''
   };
 
+  /* 「删除墓碑」：记住哪些分类/标签是被主动删掉的。
+     没有它的话，同步取并集会把删掉的又合并回来（删了过一会儿又冒出来）。 */
+  function ensureRemoved(s) {
+    if (!s.removed || typeof s.removed !== 'object') s.removed = { categories: {}, tags: {} };
+    if (!s.removed.categories || typeof s.removed.categories !== 'object') s.removed.categories = {};
+    if (!s.removed.tags || typeof s.removed.tags !== 'object') s.removed.tags = {};
+    return s;
+  }
+
   var Store = A.store = {
     KEYS: KEYS,
+    ensureRemoved: ensureRemoved,
     settings: function () {
       var s = readJSON(KEYS.settings, null);
-      if (!s) return U.clone(DEFAULT_SETTINGS);
+      if (!s) s = U.clone(DEFAULT_SETTINGS);
       s.categories = s.categories || [];
       s.tags = s.tags || [];
       s.presets = (s.presets && s.presets.length) ? s.presets : [45, 60, 90];
-      return s;
+      return ensureRemoved(s);
     },
     saveSettings: function (s) {
       s.updatedAt = new Date().toISOString();

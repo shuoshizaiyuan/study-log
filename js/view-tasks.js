@@ -196,6 +196,7 @@
     html += '<div class="row" style="padding:12px 16px 0;gap:8px">' +
       '<button class="btn sm' + (mode === 'quad' ? ' primary' : '') + '" data-mode="quad">四象限</button>' +
       '<button class="btn sm' + (mode === 'list' ? ' primary' : '') + '" data-mode="list">列表</button>' +
+      '<button class="btn sm' + (mode === 'cat' ? ' primary' : '') + '" data-mode="cat">分类</button>' +
       '<span style="flex:1"></span>' +
       '<button class="btn sm" data-import>导入</button></div>';
 
@@ -217,6 +218,41 @@
       });
       html += '</div>';
       html += '<p class="mini-note">点右上角「+」或方块空白处新建；点已有任务可编辑、直接开始或归档。</p>';
+    } else if (mode === 'cat') {
+      /* 按「分类」分组：任务不止学习，还有生活，按分类比按象限顺 */
+      var cats = S.settings().categories;
+      var known = {};
+      cats.forEach(function (c) { known[c.id] = 1; });
+      var groups = [];
+      cats.forEach(function (c) {
+        var items = tasks.filter(function (t) { return t.categoryId === c.id; });
+        if (items.length) groups.push({ name: c.name, items: items });
+      });
+      var noCat = tasks.filter(function (t) { return !t.categoryId || !known[t.categoryId]; });
+      if (noCat.length) groups.push({ name: '未分类', items: noCat });
+
+      if (!groups.length) {
+        html += '<div class="empty">还没有任务<br>点上面「导入」批量加，或切回四象限点「+」</div>';
+      } else {
+        groups.forEach(function (g) {
+          html += '<div class="sec-title" style="display:flex;justify-content:space-between">' +
+            '<span>' + U.esc(g.name) + '</span><span style="font-weight:400;color:var(--ink3)">' + g.items.length + ' 条</span></div>';
+          html += '<div class="card tight" style="margin-top:0">';
+          g.items.slice().sort(function (a, b) {
+            return String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999'));
+          }).forEach(function (t) {
+            var q = QUAD.filter(function (x) { return x.id === t.quadrant; })[0];
+            html += '<div class="list-row" style="padding:10px 0;border-bottom:1px solid var(--line)" data-task="' + t.id + '">' +
+              '<div style="min-width:0"><div class="lr-t">' + U.esc(t.title) + '</div>' +
+              '<div class="lr-s">' + U.esc([q ? q.name : ''].concat(A.meta.tagNames(t.tagIds)).filter(Boolean).join(' · ') || '无标签') +
+              (t.presetMinutes ? ' · 预计 ' + t.presetMinutes + 'min' : '') +
+              (t.dueDate ? ' · 预期 ' + U.esc(t.dueDate) : '') + '</div></div>' +
+              '<span style="color:var(--ink3)">›</span></div>';
+          });
+          html += '</div>';
+        });
+        html += '<p class="mini-note">点任意一条可编辑、直接开始或归档。分类的增删改在「设置」页。</p>';
+      }
     } else {
       if (!tasks.length) {
         html += '<div class="empty">还没有任务<br>点上面「导入」批量加，或切回四象限点「+」</div>';

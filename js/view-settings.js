@@ -432,6 +432,8 @@
           if (!ok) return;
           var s2 = S.settings();
           s2.categories = s2.categories.filter(function (x) { return x.id !== did; });
+          /* 记下"这个分类是被删掉的"，否则同步取并集时会把它合并回来 */
+          s2.removed.categories[did] = new Date().toISOString();
           S.saveSettings(s2); A.sync.markDirty('settings', 'settings'); A.sync.scheduleAuto(800);
           render();
         });
@@ -451,6 +453,8 @@
           if (!ok) return;
           var s3 = S.settings();
           s3.tags = s3.tags.filter(function (x) { return x.id !== tid; });
+          /* 同上：记下删除，避免同步时被合并回来 */
+          s3.removed.tags[tid] = new Date().toISOString();
           S.saveSettings(s3); A.sync.markDirty('settings', 'settings'); A.sync.scheduleAuto(800);
           render();
         });
