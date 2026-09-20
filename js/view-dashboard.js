@@ -8,32 +8,59 @@
   function monthOfDay(ds) { return String(ds || '').slice(0, 7); }
 
   function statsFor(records) {
-    var total = 0, byCat = {}, byDay = {}, days = {}, segs = 0;
+    var total = 0, byCat = {}, byCatTask = {}, byDay = {}, days = {}, segs = 0;
+    /* 累加一类：同时记进「分类总额」和「这一类的每个任务」 */
+    function bump(cat, title, min) {
+      byCat[cat] = (byCat[cat] || 0) + min;
+      if (!byCatTask[cat]) byCatTask[cat] = {};
+      var o = byCatTask[cat];
+      if (!o[title]) o[title] = { min: 0, segs: 0 };
+      o[title].min += min;
+      o[title].segs += 1;
+    }
     records.forEach(function (r) {
       if (r.deleted) return;
       total += r.minutes || 0;
       segs++;
-      var k = A.meta.catName(r.categoryId) || '未分类';
-      byCat[k] = (byCat[k] || 0) + (r.minutes || 0);
+      bump(A.meta.catName(r.categoryId) || '未分类', r.title || '（未命名）', r.minutes || 0);
       byDay[r.date] = (byDay[r.date] || 0) + (r.minutes || 0);
       days[r.date] = 1;
     });
-    return { total: total, byCat: byCat, byDay: byDay, dayCount: Object.keys(days).length, segs: segs };
+    return {
+      total: total, byCat: byCat, byCatTask: byCatTask,
+      byDay: byDay, dayCount: Object.keys(days).length, segs: segs, bump: bump
+    };
   }
 
-  function catBars(byCat) {
+  /* 分类条形图：点某一类展开，看这一类里每个任务花了多少 */
+  function catBars(byCat, byCatTask) {
     var keys = Object.keys(byCat).sort(function (a, b) { return byCat[b] - byCat[a]; });
     if (!keys.length) return '<div class="hint" style="margin:0">还没有记录</div>';
     var maxv = byCat[keys[0]] || 1;
-    return keys.map(function (k) {
+    var html = '<div class="hint" style="margin:-2px 0 8px">点某一类，展开看这一类里每个任务各花了多少</div>';
+    keys.forEach(function (k) {
       var v = byCat[k];
-      return '<div style="padding:6px 0">' +
-        '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px">' +
-        '<span>' + U.esc(k) + '</span><span style="color:var(--ink2);font-variant-numeric:tabular-nums">' +
-        U.dur(v) + '</span></div>' +
-        '<div style="height:6px;border-radius:4px;background:var(--sunk);overflow:hidden">' +
-        '<div style="height:100%;width:' + Math.max(3, Math.round(v / maxv * 100)) + '%;background:var(--blue)"></div></div></div>';
-    }).join('');
+      var its = (byCatTask && byCatTask[k]) ? Object.keys(byCatTask[k]).map(function (t) {
+        return { title: t, min: byCatTask[k][t].min, segs: byCatTask[k][t].segs };
+      }).sort(function (a, b) { return b.min - a.min; }) : [];
+
+      html += '<div class="catblk">' +
+        '<div class="cathead" data-catrow="' + U.esc(k) + '">' +
+        '<div class="catline">' +
+        '<span>' + U.esc(k) +
+        (its.length ? '<span class="caret">▾</span><span class="cd-cnt">' + its.length + ' 项</span>' : '') +
+        '</span>' +
+        '<span class="cd-v">' + U.dur(v) + '</span></div>' +
+        '<div class="catbar"><div style="width:' + Math.max(3, Math.round(v / maxv * 100)) + '%"></div></div>' +
+        '</div>' +
+        (its.length ? '<div class="catd">' + its.map(function (t) {
+          return '<div class="cd-row">' +
+            '<span class="cd-n">' + U.esc(t.title) + '</span>' +
+            '<span class="cd-m">' + U.dur(t.min) + (t.segs > 1 ? '　' + t.segs + ' 段' : '') + '</span></div>';
+        }).join('') + '</div>' : '') +
+        '</div>';
+    });
+    return html;
   }
 
   /* 当天：一条 24 小时的横条 */
@@ -112,10 +139,9 @@
 
       var dstat = statsFor(dayRecs);
       if (dashDay === today && live && live.date === today) {
-        var k0 = A.meta.catName(live.categoryId) || '未分类';
-        dstat.byCat[k0] = (dstat.byCat[k0] || 0) + liveMin;
+        dstat.bump(A.meta.catName(live.categoryId) || '未分类', live.title || '（未命名）', liveMin);
       }
-      html += '<div class="card tight"><h3>这天的分类投入</h3>' + catBars(dstat.byCat) + '</div>';
+      html += '<div class="card tight"><h3>这天的分类投入</h3>' + catBars(dstat.byCat, dstat.byCatTask) + '</div>';
 
       html += '<div class="sec-title">这天的每一段</div>';
       if (!dayRecs.length && !(dashDay === today && liveMin)) {
@@ -184,7 +210,7 @@
       html += '</div><div class="daylbl" style="padding:0 14px"><span>1</span><span>' +
         Math.round(days / 2) + '</span><span>' + days + '</span></div></div>';
 
-      html += '<div class="card tight"><h3>本月各分类投入</h3>' + catBars(mst.byCat) + '</div>';
+      html += '<div class="card tight"><h3>本月各分类投入</h3>' + catBars(mst.byCat, mst.byCatTask) + '</div>';
     }
 
     /* 日历（两个口径都显示，点某天=在本页切到那天） */
@@ -205,9 +231,15 @@
 
   function bind() {
     document.getElementById('main').addEventListener('click', function (e) {
-      var t = e.target.closest ? e.target.closest('[data-m],[data-cal],[data-dmode],[data-dd],[data-open-tl]') : null;
+      var t = e.target.closest ? e.target.closest('[data-m],[data-cal],[data-dmode],[data-dd],[data-open-tl],[data-catrow]') : null;
       if (!t) return;
 
+      /* 分类投入那里：就地展开 / 收起，不重画整页（不然会跳到页顶） */
+      if (t.hasAttribute('data-catrow')) {
+        var blk = t.closest ? t.closest('.catblk') : null;
+        if (blk) blk.classList.toggle('open');
+        return;
+      }
       if (t.hasAttribute('data-dmode')) { A.state.dashMode = t.getAttribute('data-dmode'); render(); return; }
       if (t.hasAttribute('data-dd')) { shiftDay(+t.getAttribute('data-dd')); A.state.dashMode = 'day'; render(); return; }
       if (t.hasAttribute('data-open-tl')) {

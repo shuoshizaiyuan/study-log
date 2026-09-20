@@ -14,8 +14,21 @@
 
   function live() { return S.tasks().filter(function (t) { return !t.archived; }); }
 
+  /* 象限 id → 名字；不归属 / 未知一律返回空串 */
+  function quadName(id) {
+    var hit = QUAD.filter(function (x) { return x.id === id; })[0];
+    return hit ? hit.name : '';
+  }
+
+  /* 「不归属」的任务：没有象限，或象限 id 已经不存在了 */
+  function noQuad(tasks) {
+    return tasks.filter(function (t) { return !quadName(t.quadrant); });
+  }
+
   function taskSheet(task, presetQuadrant) {
-    var t = task ? A.model.clone(task) : A.model.newTask({ quadrant: presetQuadrant || 'q1' });
+    /* presetQuadrant 传 'none' = 新建一条「不归属」的 */
+    var preQ = (presetQuadrant === 'none') ? null : (presetQuadrant || 'q1');
+    var t = task ? A.model.clone(task) : A.model.newTask({ quadrant: preQ });
     var settings = S.settings();
     var isNew = !task;
     var cat = t.categoryId, tags = (t.tagIds || []).slice(), quad = t.quadrant;
@@ -31,10 +44,11 @@
       settings.tags.map(function (x) {
         return '<button class="chip' + (tags.indexOf(x.id) >= 0 ? ' on' : '') + '" data-tag="' + x.id + '">' + U.esc(x.name) + '</button>';
       }).join('') + '<button class="chip" data-newtag>+ 新建标签</button></div>';
-    html += '<label class="label">归属象限</label><div class="row wrap" id="tk-quad">' +
+    html += '<label class="label">归属象限（可以不归属）</label><div class="row wrap" id="tk-quad">' +
       QUAD.map(function (q) {
         return '<button class="chip' + (q.id === quad ? ' on' : '') + '" data-q="' + q.id + '">' + q.name + '</button>';
-      }).join('') + '</div>';
+      }).join('') +
+      '<button class="chip' + (quad ? '' : ' on') + '" data-qnone>不归属（不进四象限）</button></div>';
     html += '<label class="label">预期完成时间</label>';
     html += '<input class="input" id="tk-due" type="date" value="' + U.esc(t.dueDate || '') + '">';
     html += '<label class="label">预定时长（分钟，可留空）</label>';
@@ -66,12 +80,22 @@
             b.classList.toggle('on', tags.indexOf(b.dataset.tag) >= 0);
           };
         });
+        function syncQuad() {
+          el.querySelectorAll('[data-q]').forEach(function (x) {
+            x.classList.toggle('on', !!quad && x.dataset.q === quad);
+          });
+          var nb = el.querySelector('[data-qnone]');
+          if (nb) nb.classList.toggle('on', !quad);
+        }
         el.querySelectorAll('[data-q]').forEach(function (b) {
           b.onclick = function () {
-            quad = b.dataset.q;
-            el.querySelectorAll('[data-q]').forEach(function (x) { x.classList.toggle('on', x.dataset.q === quad); });
+            /* 再点一下已选中的那个 = 取消归属 */
+            quad = (quad === b.dataset.q) ? null : b.dataset.q;
+            syncQuad();
           };
         });
+        var qNoneBtn = el.querySelector('[data-qnone]');
+        if (qNoneBtn) qNoneBtn.onclick = function () { quad = null; syncQuad(); };
         el.querySelector('[data-newcat]').onclick = function () {
           var name = prompt('新分类名称'); if (!name) return;
           A.meta.ensureCategory(name);
@@ -151,7 +175,7 @@
       '<label class="label">先统一归到</label><div class="row wrap" id="im-q">' +
       QUAD.map(function (q, i) {
         return '<button class="chip' + (i === 0 ? ' on' : '') + '" data-q="' + q.id + '">' + q.name + '</button>';
-      }).join('') + '</div>';
+      }).join('') + '<button class="chip" data-qnone>不归属</button></div>';
     var quad = 'q1';
     UI.sheet({
       title: '导入任务',
@@ -159,12 +183,21 @@
       footHTML: '<button class="btn ghost" data-cancel>取消</button>' +
         '<button class="btn primary" data-go>导入</button>',
       onMount: function (el, close) {
+        function syncQ() {
+          el.querySelectorAll('[data-q]').forEach(function (x) {
+            x.classList.toggle('on', !!quad && x.dataset.q === quad);
+          });
+          var nb = el.querySelector('[data-qnone]');
+          if (nb) nb.classList.toggle('on', !quad);
+        }
         el.querySelectorAll('[data-q]').forEach(function (b) {
           b.onclick = function () {
-            quad = b.dataset.q;
-            el.querySelectorAll('[data-q]').forEach(function (x) { x.classList.toggle('on', x.dataset.q === quad); });
+            quad = (quad === b.dataset.q) ? null : b.dataset.q;
+            syncQ();
           };
         });
+        var nqBtn = el.querySelector('[data-qnone]');
+        if (nqBtn) nqBtn.onclick = function () { quad = null; syncQ(); };
         el.querySelector('[data-cancel]').onclick = close;
         el.querySelector('[data-go]').onclick = function () {
           var lines = String(el.querySelector('#im-text').value || '')
@@ -217,7 +250,21 @@
           '</div></div>';
       });
       html += '</div>';
-      html += '<p class="mini-note">点右上角「+」或方块空白处新建；点已有任务可编辑、直接开始或归档。</p>';
+      /* 不归属的任务也要看得见，否则会以为丢了 */
+      var nqs = noQuad(tasks);
+      if (nqs.length) {
+        html += '<div class="q-grid" style="grid-template-columns:1fr;padding-bottom:0">' +
+          '<div class="q-cell" style="min-height:0">' +
+          '<div class="qh"><span class="qn">不归属象限（' + nqs.length + '）</span>' +
+          '<button class="add" data-add="none">+</button></div>' +
+          '<div class="qbody">' + nqs.slice(0, 12).map(function (t) {
+            return '<div class="q-task" data-task="' + t.id + '"><span class="qt">' + U.esc(t.title) + '</span>' +
+              '<span class="qm">' + U.esc([A.meta.catName(t.categoryId)].concat(A.meta.tagNames(t.tagIds)).filter(Boolean).join(' · ') || '未分类') +
+              (t.dueDate ? ' · 预期 ' + U.esc(t.dueDate) : '') + '</span></div>';
+          }).join('') + (nqs.length > 12 ? '<div class="qm" style="text-align:center;font-size:11px;color:var(--ink3)">还有 ' + (nqs.length - 12) + ' 条</div>' : '') +
+          '</div></div></div>';
+      }
+      html += '<p class="mini-note">点右上角「+」或方块空白处新建；点已有任务可编辑、直接开始或归档。不想归到任何象限的任务，会待在上面的「不归属象限」里，同时仍能在列表 / 分类视图看到。</p>';
     } else if (mode === 'cat') {
       /* 按「分类」分组：任务不止学习，还有生活，按分类比按象限顺 */
       var cats = S.settings().categories;
@@ -241,10 +288,9 @@
           g.items.slice().sort(function (a, b) {
             return String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999'));
           }).forEach(function (t) {
-            var q = QUAD.filter(function (x) { return x.id === t.quadrant; })[0];
             html += '<div class="list-row" style="padding:10px 0;border-bottom:1px solid var(--line)" data-task="' + t.id + '">' +
               '<div style="min-width:0"><div class="lr-t">' + U.esc(t.title) + '</div>' +
-              '<div class="lr-s">' + U.esc([q ? q.name : ''].concat(A.meta.tagNames(t.tagIds)).filter(Boolean).join(' · ') || '无标签') +
+              '<div class="lr-s">' + U.esc([quadName(t.quadrant) || '未归类'].concat(A.meta.tagNames(t.tagIds)).filter(Boolean).join(' · ')) +
               (t.presetMinutes ? ' · 预计 ' + t.presetMinutes + 'min' : '') +
               (t.dueDate ? ' · 预期 ' + U.esc(t.dueDate) : '') + '</div></div>' +
               '<span style="color:var(--ink3)">›</span></div>';
@@ -259,13 +305,15 @@
       } else {
         html += '<div style="margin-top:12px">';
         tasks.slice().sort(function (a, b) {
-          if (a.quadrant !== b.quadrant) return a.quadrant < b.quadrant ? -1 : 1;
+          /* 不归属的排最后（9 = 没有象限） */
+          var ra = 9, rb = 9;
+          QUAD.forEach(function (q, i) { if (q.id === a.quadrant) ra = i + 1; if (q.id === b.quadrant) rb = i + 1; });
+          if (ra !== rb) return ra - rb;
           return String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999'));
         }).forEach(function (t) {
-          var q = QUAD.filter(function (x) { return x.id === t.quadrant; })[0];
           html += '<div class="list-row" data-task="' + t.id + '">' +
             '<div><div class="lr-t">' + U.esc(t.title) + '</div>' +
-            '<div class="lr-s">' + U.esc([q ? q.name : ''].concat(A.meta.catName(t.categoryId) ? [A.meta.catName(t.categoryId)] : [])
+            '<div class="lr-s">' + U.esc([quadName(t.quadrant) || '未归类'].concat(A.meta.catName(t.categoryId) ? [A.meta.catName(t.categoryId)] : [])
               .concat(A.meta.tagNames(t.tagIds)).filter(Boolean).join(' · ')) +
             (t.dueDate ? ' · 预期 ' + U.esc(t.dueDate) : '') + '</div></div>' +
             '<span style="color:var(--ink3)">›</span></div>';

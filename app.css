@@ -146,6 +146,24 @@ textarea.input{min-height:88px;resize:vertical;line-height:1.65}
 .q-task .qm{font-size:11px;color:var(--ink3);display:block;margin-top:2px}
 .q-empty{font-size:11.5px;color:var(--ink3);text-align:center;margin:auto 0}
 
+/* 总览「分类投入」：点一类展开，看这一类里每个任务各花多少 */
+.catblk{border-bottom:1px solid var(--line)}
+.catblk:last-child{border-bottom:none}
+.catblk .cathead{padding:8px 0;cursor:pointer}
+.catblk .catline{display:flex;justify-content:space-between;gap:8px;font-size:13px;margin-bottom:5px}
+.catblk .cd-v{color:var(--ink2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.catblk .caret{display:inline-block;font-size:10px;color:var(--ink3);margin-left:5px;transition:transform .15s}
+.catblk .cd-cnt{font-size:11px;color:var(--ink3);margin-left:5px}
+.catblk.open .caret{transform:rotate(180deg)}
+.catblk .catbar{height:6px;border-radius:4px;background:var(--sunk);overflow:hidden}
+.catblk .catbar > div{height:100%;background:var(--blue)}
+.catblk .catd{display:none;padding:0 0 8px 10px;margin-left:2px;border-left:2px solid var(--line)}
+.catblk.open .catd{display:block}
+.catblk .cd-row{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:6px 0}
+.catblk .cd-row + .cd-row{border-top:1px solid var(--line)}
+.catblk .cd-n{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.catblk .cd-m{color:var(--ink2);white-space:nowrap;font-variant-numeric:tabular-nums}
+
 /* 弹层里的简化四象限（开始新任务 → 任务清单） */
 .mq-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 .mq{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:9px 10px;min-height:104px;

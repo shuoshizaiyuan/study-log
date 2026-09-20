@@ -241,7 +241,8 @@
         title: o.title || '',
         categoryId: o.categoryId || null,
         tagIds: o.tagIds || [],
-        quadrant: o.quadrant || 'q1',
+        /* 显式传 null 表示「不归属任何象限」；不传才给默认 q1 */
+        quadrant: (o.quadrant === undefined ? 'q1' : o.quadrant),
         dueDate: o.dueDate || null,
         presetMinutes: o.presetMinutes || null,
         archived: !!o.archived,
