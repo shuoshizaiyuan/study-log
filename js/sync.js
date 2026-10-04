@@ -378,8 +378,26 @@
           summary.tookOver = true;
         }
       } else if (next && next.deviceId && next.deviceId !== me) {
-        /* 交叉收账：对方起跑比本机晚 → 本机让位（截断成记录、停表、不回推 running） */
-        if (concedeLocal(next)) summary.conceded = true;
+        var cur = S.running();
+        if (!cur || !cur.startTs) {
+          /* 任务漫游：本机空闲 + 云端有别的设备在跑 → 自动接手为"本机进行中"。
+             同一段、同一起点，带 adoptedFrom 标记；原设备下次同步走到 adoptedMe 分支自动停表，
+             不产生记录 —— 时间零丢失、不会记重。UI 零改动：时间线直接显示本机"进行中"。 */
+          S.setRunning({
+            startTs: next.startTs,
+            date: next.date || U.dateStr(new Date(next.startTs)),
+            title: next.title || '',
+            taskId: next.taskId || null,
+            categoryId: next.categoryId || null,
+            tagIds: (next.tagIds || []).slice(),
+            adoptedFrom: next.deviceId
+          });
+          summary.adopted = true;
+          markRunning();   /* 立刻推上去（带 adoptedFrom），原设备会自动停 */
+        } else if (concedeLocal(next)) {
+          /* 本机也在跑：交叉收账（对方起跑更晚 → 本机让位） */
+          summary.conceded = true;
+        }
       }
 
       var mm0 = S.meta();
@@ -566,6 +584,10 @@
       if (r && r.tookOver) {
         refreshTimeline();
         A.ui.toast('这段已被另一台设备接手，本机已停止计时（不会重复记一条）', 5000);
+      } else if (r && r.adopted) {
+        refreshTimeline();
+        var ad = S.running();
+        A.ui.toast('已接手另一台设备上的任务「' + ((ad && ad.title) || '进行中') + '」——是同一段，另一台下次同步会自动停', 5000);
       } else if (r && r.conceded) {
         refreshTimeline();
         var cd = S.meta().concede;
