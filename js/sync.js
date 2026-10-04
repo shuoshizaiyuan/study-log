@@ -197,6 +197,65 @@
     return true;
   }
 
+  /* ================= 记录层兜底收账（并行到底的两段，落成记录后也要理顺） =================
+     场景：两台设备互不知情地并行计时到各自结束（期间零同步），会落成两条时间重叠的记录。
+     法则与事中收账同一条：起跑晚的是现任，先开始的段自动截断到现任的起点。
+     - 软删记录不参与；端点相接（一段的结束 == 另一段的开始）不算重叠。
+     - 截后不足 1 分钟：无 entries 按误触口径软删；有 entries 保留（打卡事实不丢）。
+     - 被改的记录更新 updatedAt（LWW 能同步出去）并标记所在月 dirty。
+     - 规则是确定性函数：两台设备对同一组记录算出的结果一致，收敛无拉锯。 */
+  function reconcileOverlaps() {
+    var fixed = 0, removed = 0;
+    function aliveNow() {
+      return S.records().filter(function (r) {
+        return r && !r.deleted && r.startTs > 0 && r.endTs > r.startTs;
+      });
+    }
+    for (;;) {
+      var alive = aliveNow(), hit = null;
+      for (var i = 0; i < alive.length && !hit; i++) {
+        for (var j = i + 1; j < alive.length; j++) {
+          var a = alive[i], b = alive[j];
+          var loser, winner;
+          if (a.startTs !== b.startTs) {
+            loser = a.startTs < b.startTs ? a : b;          /* 起跑早的让位 */
+          } else if (String(a.updatedAt || '') !== String(b.updatedAt || '')) {
+            loser = String(a.updatedAt || '') < String(b.updatedAt || '') ? a : b;
+          } else {
+            loser = String(a.id) > String(b.id) ? a : b;    /* 兜底 tie-break，保证确定 */
+          }
+          winner = loser === a ? b : a;
+          if (loser.endTs > winner.startTs) { hit = { l: loser, w: winner }; break; }
+        }
+      }
+      if (!hit) break;
+      var L = hit.l, W = hit.w;
+      var newEnd = W.startTs;
+      var dur = newEnd - L.startTs;
+      var hasContent = !!(L.entries && L.entries.length);
+      var all = S.records();
+      var at = new Date().toISOString();
+      for (var k = 0; k < all.length; k++) {
+        if (all[k].id !== L.id) continue;
+        if (dur <= 0 || (dur < 60000 && !hasContent)) {
+          /* 不足 1 分钟且无内容 → 软删（deleted 会同步过去；硬删会被对方合并回来） */
+          all[k].deleted = true;
+          removed++;
+        } else {
+          all[k].endTs = newEnd;
+          all[k].end = U.hhmm(newEnd);
+          all[k].minutes = U.minutesBetween(L.startTs, newEnd);
+          fixed++;
+        }
+        all[k].updatedAt = at;
+        markDirty('month', monthOf(all[k]));
+        break;
+      }
+      S.saveRecords(all);
+    }
+    return { fixed: fixed, removed: removed };
+  }
+
   /* 推 running.json：先读云端，若「现任」已换成起跑更晚的别家设备 → 本机改为收账、不推。
      请求量与原 putWithRetry 相同（读 1 次 + 写 1 次）。 */
   function pushRunningFile(tries) {
@@ -207,6 +266,10 @@
       var rem = (data && data.running) ? data.running : null;
       if (rem && concedeLocal(rem)) return { conceded: true };
       var payload = localRunningPayload();
+      if (!payload.running && rem && rem.deviceId && rem.deviceId !== deviceId()) {
+        /* 本机已停表，但云端是别的设备的活跃会话 → 绝不推 null 去盖掉它（现任要自己收） */
+        return { skipped: true };
+      }
       return A.gh.writeFile(RUNNING_FILE, JSON.stringify(payload, null, 2),
         f ? f.sha : null, 'running: ' + (payload.running ? payload.running.title : 'idle'))
         .catch(function (e) {
@@ -371,6 +434,10 @@
         });
       }, Promise.resolve());
     }).then(function () {
+      /* 记录层兜底收账：把并行到底产生的重叠记录理顺（先开始的让位） */
+      var fix = reconcileOverlaps();
+      if (fix.fixed) summary.overlapFixed = fix.fixed;
+      if (fix.removed) summary.overlapRemoved = fix.removed;
       setStatus('ok');
       noteResult(true, '');
       return summary;
@@ -503,6 +570,9 @@
         refreshTimeline();
         var cd = S.meta().concede;
         A.ui.toast('另一台设备开始了新任务，本机这段已自动收账（记到 ' + U.hhmm((cd && cd.endTs) || Date.now()) + ' 为止，不重叠）', 5000);
+      } else if (r && (r.overlapFixed || r.overlapRemoved)) {
+        refreshTimeline();
+        A.ui.toast('发现并行时段的重叠记录，已按「先开始的让位」自动理顺', 5000);
       } else if (r && r.runningChanged) {
         refreshTimeline();
       }
@@ -552,6 +622,7 @@
     recordsFilePath: recordsFilePath,
     markMonthOf: function (record) { markDirty('month', monthOf(record)); },
     concede: concedeLocal,
-    pushRunningFile: pushRunningFile
+    pushRunningFile: pushRunningFile,
+    reconcileOverlaps: reconcileOverlaps
   };
 })(window);
