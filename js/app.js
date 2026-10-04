@@ -127,6 +127,7 @@
       A.sync.pull().then(function (r) {
         if (A.state.view === 'timeline') A.views.timeline.render();
         if (r && r.tookOver) UI.toast('这段已被另一台设备接手，本机已停止计时', 5000);
+        else if (r && r.conceded) UI.toast('另一台设备开始了新任务，本机这段已自动收账，时间不会重叠', 5000);
         else UI.toast('已从云端取回最新数据');
       }).catch(function (e) {
         UI.toast('同步失败：' + e.message + '（数据仍在本机，不会丢）', 6000);

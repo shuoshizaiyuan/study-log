@@ -151,13 +151,80 @@
      而是立刻单独把 running.json 推上去（只有 2 个请求）。 */
   var runPushing = false, runPending = false, runKick = false, lastRunPush = null;
 
+  /* ================= 交叉收账（同一时刻全世界只允许一段计时在跑） =================
+     规则：起跑晚的是「现任」。本机一旦发现云端有【别的设备、且起跑比本机晚】的活跃会话，
+     就把本机这段自动结算成一条记录（终点 = 对方的起点），然后停表；
+     **不回推 running**（云端那份是现任推的，不能盖掉）。
+     检查点有两处：① pull 时看到（对方已推上来）② 推 running 前读到（本机之前没传上去）。
+     两台设备无论谁先谁后推上去，最终都收敛成：先开始的记到后开始的起点为止 —— 不重叠、不丢时间。 */
+  function concedeLocal(remote) {
+    var cur = S.running();
+    if (!cur || !cur.startTs) return false;
+    if (!remote || !remote.startTs) return false;
+    if (remote.deviceId && remote.deviceId === deviceId()) return false;
+    if (remote.adoptedFrom && remote.adoptedFrom === deviceId()) return false;  /* 被接手走 takeover，不收账 */
+    if (remote.startTs <= cur.startTs) return false;                            /* 对方起跑更早 → 本机是现任，不动 */
+    var endTs = remote.startTs;
+    var m0 = S.meta();
+    var stashed = [];
+    if (m0.liveEntries && m0.liveEntries[cur.startTs]) {
+      stashed = m0.liveEntries[cur.startTs];
+      delete m0.liveEntries[cur.startTs];
+      S.saveMeta(m0);
+    }
+    if (endTs - cur.startTs < 60000 && !stashed.length) {
+      /* 不足 1 分钟且什么都没记：与手动结算同口径，当作误触，不产生记录 */
+    } else {
+      if (endTs - cur.startTs < 60000) endTs = cur.startTs + 60000;   /* 太短但有内容：补足 1 分钟 */
+      var rec = A.model.newRecord({
+        date: cur.date || U.dateStr(new Date(cur.startTs)),
+        start: U.hhmm(cur.startTs), end: U.hhmm(endTs),
+        startTs: cur.startTs, endTs: endTs,
+        minutes: U.minutesBetween(cur.startTs, endTs),
+        title: cur.title || '', taskId: cur.taskId || null,
+        categoryId: cur.categoryId || null, tagIds: cur.tagIds || [],
+        entries: stashed
+      });
+      var all = S.records(); all.push(rec); S.saveRecords(all);
+      A.sync.markMonthOf(rec);
+    }
+    S.setRunning(null);
+    clearDirty('running', ['running']);
+    runPending = false;   /* 取消排队中的 running 推送，防止把 null 推上去盖掉现任 */
+    var m = S.meta();
+    m.concede = { at: new Date().toISOString(), title: cur.title || '', startTs: cur.startTs, endTs: endTs, byDevice: remote.deviceId || '' };
+    S.saveMeta(m);
+    return true;
+  }
+
+  /* 推 running.json：先读云端，若「现任」已换成起跑更晚的别家设备 → 本机改为收账、不推。
+     请求量与原 putWithRetry 相同（读 1 次 + 写 1 次）。 */
+  function pushRunningFile(tries) {
+    tries = (tries == null) ? 2 : tries;
+    return A.gh.readFile(RUNNING_FILE).then(function (f) {
+      var data = null;
+      try { data = f ? JSON.parse(f.text) : null; } catch (e) { data = null; }
+      var rem = (data && data.running) ? data.running : null;
+      if (rem && concedeLocal(rem)) return { conceded: true };
+      var payload = localRunningPayload();
+      return A.gh.writeFile(RUNNING_FILE, JSON.stringify(payload, null, 2),
+        f ? f.sha : null, 'running: ' + (payload.running ? payload.running.title : 'idle'))
+        .catch(function (e) {
+          if ((e.status === 409 || e.status === 422) && tries > 0) {
+            return new Promise(function (r) { setTimeout(r, 350); })
+              .then(function () { return pushRunningFile(tries - 1); });
+          }
+          throw e;
+        });
+    });
+  }
+
   function effectRunPush() {
-    var payload = localRunningPayload();
-    return putWithRetry(RUNNING_FILE, JSON.stringify(payload, null, 2),
-      'running: ' + (payload.running ? payload.running.title : 'idle'), 2)
-      .then(function () {
+    return pushRunningFile()
+      .then(function (res) {
         clearDirty('running', ['running']);
-        lastRunPush = { ok: true, at: Date.now(), running: !!payload.running, title: payload.running ? payload.running.title : '' };
+        var nowRun = S.running();
+        lastRunPush = { ok: true, at: Date.now(), running: !!(nowRun && nowRun.startTs), title: (nowRun && nowRun.title) || '', conceded: !!(res && res.conceded) };
       })
       .catch(function (e) {
         /* 失败不吞掉：保留待传标记，下一次常规同步会补上 */
@@ -230,8 +297,7 @@
     }).then(function (f) {
       var data = null;
       try { data = f ? JSON.parse(f.text) : null; } catch (e) { data = null; }
-      var mm0 = S.meta();
-      var prev = mm0.remoteRunning;
+      var prev = S.meta().remoteRunning;
       var next = (data && data.running && data.running.startTs) ? data.running : null;
       var changed = String((prev && prev.startTs) || '') !== String((next && next.startTs) || '') ||
         String((prev && prev.deviceId) || '') !== String((next && next.deviceId) || '');
@@ -239,15 +305,22 @@
 
       /* 本机这段被另一台设备"接手"了 → 本机立刻停表，且**不产生记录**（避免同一时段记成两条）。
          这里故意不回推 null：云端那份是接手方推的，应该让它继续存在。 */
-      if (next && next.adoptedFrom && next.adoptedFrom === me && next.deviceId !== me) {
+      var adoptedMe = !!(next && next.adoptedFrom && next.adoptedFrom === me && next.deviceId !== me);
+      if (adoptedMe) {
         var cur = S.running();
         if (cur && cur.startTs) {
-          if (mm0.liveEntries && mm0.liveEntries[cur.startTs]) delete mm0.liveEntries[cur.startTs];
+          var mT = S.meta();
+          if (mT.liveEntries && mT.liveEntries[cur.startTs]) delete mT.liveEntries[cur.startTs];
+          S.saveMeta(mT);
           summary.tookOver = true;
         }
-        mm0.takeover = { at: new Date().toISOString(), title: next.title || '', startTs: next.startTs };
+      } else if (next && next.deviceId && next.deviceId !== me) {
+        /* 交叉收账：对方起跑比本机晚 → 本机让位（截断成记录、停表、不回推 running） */
+        if (concedeLocal(next)) summary.conceded = true;
       }
 
+      var mm0 = S.meta();
+      if (adoptedMe) mm0.takeover = { at: new Date().toISOString(), title: next.title || '', startTs: next.startTs };
       mm0.remoteRunning = next;
       mm0.remoteRunningAt = (data && data.updatedAt) || '';
       S.saveMeta(mm0);
@@ -349,12 +422,11 @@
           .then(function () { clearDirty('month', [mo]); });
       });
     });
-    /* 进行中时段：只推"起点"，别的设备拿到后自己接着算 */
+    /* 进行中时段：只推"起点"，别的设备拿到后自己接着算。
+       推前会先读云端做收账检查（对方起跑更晚 → 本机让位，不推）。 */
     if (dirtyOf('running').length) {
       chain = chain.then(function () {
-        var payload = localRunningPayload();
-        return putWithRetry(RUNNING_FILE, JSON.stringify(payload, null, 2),
-          'running: ' + (payload.running ? payload.running.title : 'idle'))
+        return pushRunningFile()
           .then(function () { clearDirty('running', ['running']); });
       });
     }
@@ -427,6 +499,10 @@
       if (r && r.tookOver) {
         refreshTimeline();
         A.ui.toast('这段已被另一台设备接手，本机已停止计时（不会重复记一条）', 5000);
+      } else if (r && r.conceded) {
+        refreshTimeline();
+        var cd = S.meta().concede;
+        A.ui.toast('另一台设备开始了新任务，本机这段已自动收账（记到 ' + U.hhmm((cd && cd.endTs) || Date.now()) + ' 为止，不重叠）', 5000);
       } else if (r && r.runningChanged) {
         refreshTimeline();
       }
@@ -474,6 +550,8 @@
     pushPendingImages: pushPendingImages,
     monthOf: monthOf,
     recordsFilePath: recordsFilePath,
-    markMonthOf: function (record) { markDirty('month', monthOf(record)); }
+    markMonthOf: function (record) { markDirty('month', monthOf(record)); },
+    concede: concedeLocal,
+    pushRunningFile: pushRunningFile
   };
 })(window);
