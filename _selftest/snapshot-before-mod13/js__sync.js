@@ -32,27 +32,6 @@
     });
   }
 
-  /* 旧版图片上传曾把 base64 又当文本编了一层（writeFile → utf8ToB64），
-     仓库里存的是"base64 文本"不是图片 —— 本机有缓存看不出，另一台设备取回就是裂图。
-     这里按内容甄别：魔数对 → 原样；内容其实是第一层 base64 文本 → 剥一层还原。
-     本机缓存命中也走这里，历史上的坏缓存能自动修好。 */
-  function normalizeImgDataUrl(dataUrl) {
-    var s = String(dataUrl || '');
-    var m = /^data:[^;,]*;base64,([A-Za-z0-9+/=]+)$/.exec(s);
-    if (!m) return s;
-    var payload = m[1];
-    try {
-      var head = atob(payload.slice(0, 16));
-      if (head.length >= 3 && head.charCodeAt(0) === 0xFF && head.charCodeAt(1) === 0xD8 && head.charCodeAt(2) === 0xFF) return s; /* JPEG 魔数 */
-      if (head.length >= 4 && head.charCodeAt(0) === 0x89 && head.charCodeAt(1) === 0x50 && head.charCodeAt(2) === 0x4E && head.charCodeAt(3) === 0x47) return s; /* PNG 魔数 */
-      /* 魔数不对：看内容是不是"图片 base64 文本"（"/9j/" 或 "iVBOR" 开头 = 旧版双重编码特征） */
-      var inner = atob(payload);
-      if (inner.length >= 4 && inner.charCodeAt(0) === 0x2F && inner.charCodeAt(1) === 0x39 && inner.charCodeAt(2) === 0x6A && inner.charCodeAt(3) === 0x2F) return 'data:image/jpeg;base64,' + inner;
-      if (inner.length >= 5 && inner.charCodeAt(0) === 0x69 && inner.charCodeAt(1) === 0x56 && inner.charCodeAt(2) === 0x42 && inner.charCodeAt(3) === 0x4F && inner.charCodeAt(4) === 0x52) return 'data:image/png;base64,' + inner;
-    } catch (e) { /* 解不动就原样返回，别把好数据弄坏 */ }
-    return s;
-  }
-
   var imgStore = A.imgStore = {
     put: function (rec) { return tx('readwrite', function (st) { st.put(rec); }); },
     get: function (id) { return tx('readonly', function (st) { return st.get(id); }); },
@@ -62,14 +41,7 @@
     src: function (meta) {
       if (!meta) return Promise.resolve('');
       return imgStore.get(meta.id).then(function (row) {
-        if (row && row.dataUrl) {
-          var fixed = normalizeImgDataUrl(row.dataUrl);
-          if (fixed !== row.dataUrl) {
-            row.dataUrl = fixed;
-            return imgStore.put(row).then(function () { return fixed; });   /* 坏缓存自愈回写 */
-          }
-          return fixed;
-        }
+        if (row && row.dataUrl) return row.dataUrl;
         if (!meta.path) return '';
         var c = A.gh.cfg();
         if (!c.ready) return '';
@@ -93,7 +65,6 @@
             fr.readAsDataURL(b);
           });
         }).then(function (dataUrl) {
-          dataUrl = normalizeImgDataUrl(dataUrl);   /* 旧版双重编码的历史文件在这里剥层还原 */
           if (dataUrl) {
             return imgStore.put({ id: meta.id, dataUrl: dataUrl, cachedAt: Date.now() })
               .then(function () { return dataUrl; });
@@ -102,8 +73,7 @@
         }).catch(function () { return ''; });
       });
     },
-    stage: function (entry) { return imgStore.put(entry); },
-    normalize: normalizeImgDataUrl
+    stage: function (entry) { return imgStore.put(entry); }
   };
 
   /* ================= 变更标记 ================= */
@@ -563,8 +533,7 @@
         if (stop) return stop;
         if (item.kind !== 'image') return false;
         var path = 'evidence/' + item.month + '/' + item.name;
-        /* base64 直传（writeB64）；走 writeFile 会被再编一层，仓库存成 base64 文本 */
-        return A.gh.writeB64(path, item.base64, null, 'evidence: ' + item.name)
+        return A.gh.writeFile(path, item.base64, null, 'evidence: ' + item.name)
           .then(function () {
             S.saveQueue(S.queue().filter(function (x) { return x.id !== item.id; }));
             return false;

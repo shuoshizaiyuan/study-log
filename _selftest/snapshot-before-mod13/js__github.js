@@ -87,20 +87,6 @@
     return req(filePath(name), { method: 'PUT', body: body });
   }
 
-  /* 写二进制文件：内容已经是 base64（如图片），直接透传，绝不能再编一层。
-     走 writeFile 会把 base64 当文本又 utf8ToB64 一次，仓库里存的就成了"base64 文本"
-     而不是图片本身 —— 本机有缓存看不出，另一台设备取回就是裂图。 */
-  function writeB64(name, b64, sha, message) {
-    var c = cfg();
-    var body = {
-      message: message || ('update ' + name),
-      content: String(b64 || '').replace(/\s+/g, ''),
-      branch: c.branch
-    };
-    if (sha) body.sha = sha;
-    return req(filePath(name), { method: 'PUT', body: body });
-  }
-
   /* 列目录 → [{name, path, sha, type, size}] */
   function listDir(name) {
     var c = cfg();
@@ -185,7 +171,6 @@
     cfg: cfg,
     readFile: readFile,
     writeFile: writeFile,
-    writeB64: writeB64,
     listDir: listDir,
     mergeList: mergeList,
     mergeTasks: mergeTasks,
