@@ -250,10 +250,6 @@ textarea.input{min-height:88px;resize:vertical;line-height:1.65}
   display:flex;align-items:center;justify-content:center;position:relative}
 .thumb img{width:100%;height:100%;object-fit:cover;display:block}
 .thumb .ph{font-size:10.5px;color:var(--ink3);text-align:center;padding:2px}
-/* 图一旦加载出来，占位文本（文件名）立刻退场 —— 文字只兜底，永不参与版面 */
-.thumb.has-img .ph{display:none}
-/* 条目里的图片格子：小号自适应（64~88px），几行文字配几张小图，比例保持协调 */
-.entry .thumb-grid{grid-template-columns:repeat(auto-fill,minmax(64px,88px));margin-top:6px}
 .thumb .del{position:absolute;right:2px;top:2px;width:18px;height:18px;border-radius:50%;
   background:rgba(27,33,48,.62);color:#fff;font-size:13px;line-height:18px;text-align:center}
 

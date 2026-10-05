@@ -525,22 +525,18 @@
 
         function renderThumbs() {
           thumbs.innerHTML = editing.images.map(function (im, i) {
-            return '<div class="thumb" data-i="' + i + '" data-vimg="' + U.esc(im.id) + '" data-vpath="' + U.esc(im.path || '') + '">' +
-              '<span class="ph">…</span>' +
+            return '<div class="thumb" data-i="' + i + '"><span class="ph">' + U.esc(im.name) + '</span>' +
               '<span class="del" data-del="' + i + '">×</span></div>';
           }).join('');
-          fillThumbs(thumbs);
         }
         function renderList() {
           if (!listEl) return;
           listEl.innerHTML = entries.length ? entries.map(function (en) {
             return '<div class="entry"><div class="eh">' + U.esc(en.at) + '</div>' +
               '<div class="eb">' + (en.text ? U.esc(en.text) : '<span class="hint">（无文字）</span>') +
-              (en.images && en.images.length ? '<div class="thumb-grid">' + en.images.map(thumbCell).join('') + '</div>' : '') +
+              (en.images && en.images.length ? '<div class="hint">图：' + en.images.map(function (i) { return U.esc(i.name); }).join('、') + '</div>' : '') +
               '</div></div>';
           }).join('') : '<div class="hint">还没有分次记录</div>';
-          fillThumbs(listEl);
-          listEl.onclick = thumbClick;
         }
         renderList();
 
@@ -574,9 +570,7 @@
             var im = editing.images[i];
             if (im) { A.imgStore.del(im.id); }
             editing.images.splice(i, 1); renderThumbs();
-            return;
           }
-          thumbClick(e);   /* 点图看大图 */
         };
         ta.addEventListener('paste', function (e) {
           var items = (e.clipboardData && e.clipboardData.items) || [];
@@ -603,13 +597,11 @@
             S.saveMeta(stash);
           } else {
             rec.entries = (rec.entries || []).concat([en]);
-            entries.push(en);          /* 闭包同步：弹层里的列表立刻能看见新的一条 */
             rec.updatedAt = new Date().toISOString();
             var all = S.records();
             for (var i = 0; i < all.length; i++) if (all[i].id === rec.id) { all[i] = rec; break; }
             S.saveRecords(all);
             A.sync.markMonthOf(rec);
-            renderList();
           }
           A.sync.scheduleAuto(1200);
           editing = { id: null, text: '', images: [] };
@@ -619,39 +611,6 @@
         };
       }
     });
-  }
-
-  /* ---------------- 弹层里的图片缩略图 ----------------
-     以前这里只显示文件名文本，长文件名把小格子和条目撑得乱七八糟；
-     现在一律显示图片本体（object-fit 裁进固定比例的小格），点击放大预览。
-     文件名只在图片还没加载出来时兜底占位，绝不参与排版。 */
-  function thumbCell(im) {
-    return '<div class="thumb" data-vimg="' + U.esc(im.id) + '" data-vpath="' + U.esc(im.path || '') + '">' +
-      '<span class="ph">…</span></div>';
-  }
-  function fillThumbs(root) {
-    if (!root) return;
-    root.querySelectorAll('[data-vimg]').forEach(function (cell) {
-      A.imgStore.src({ id: cell.getAttribute('data-vimg'), path: cell.getAttribute('data-vpath') })
-        .then(function (url) {
-          if (!url || !cell.isConnected) return;
-          var img = cell.querySelector('img');
-          if (!img) {
-            img = document.createElement('img');
-            img.alt = '';
-            cell.insertBefore(img, cell.firstChild);
-            cell.classList.add('has-img');
-          }
-          if (img.getAttribute('src') !== url) img.src = url;
-        }).catch(function () { /* 取不到就留着占位，不影响别的 */ });
-    });
-  }
-  function thumbClick(e) {
-    var cell = e.target && e.target.closest ? e.target.closest('[data-vimg]') : null;
-    if (!cell) return;
-    if (e.target.closest && e.target.closest('.del')) return;   /* 删除钮归各自的逻辑管 */
-    var img = cell.querySelector('img');
-    if (img && img.getAttribute('src')) UI.lightbox(img.getAttribute('src'));
   }
 
   /* ---------------- 点色块：查看 / 编辑 ---------------- */
@@ -712,11 +671,9 @@
           return '<div class="entry"><div class="eh">' + U.esc(en.at) +
             ' <button class="chip mini" data-delentry="' + i + '" style="float:right;margin-top:-2px">删</button></div>' +
             '<div class="eb">' + (en.text ? U.esc(en.text) : '（无文字）') +
-            (en.images && en.images.length ? '<div class="thumb-grid">' + en.images.map(thumbCell).join('') + '</div>' : '') +
+            (en.images && en.images.length ? '<div class="hint">图：' + en.images.map(function (x) { return U.esc(x.name); }).join('、') + '</div>' : '') +
             '</div></div>';
         }).join('') : '<div class="hint">暂无</div>';
-        fillThumbs(listEl);
-        listEl.onclick = thumbClick;
 
         el.querySelectorAll('[data-cat]').forEach(function (b) {
           b.onclick = function () {
